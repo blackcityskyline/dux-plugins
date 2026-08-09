@@ -1,0 +1,186 @@
+#!/bin/sh
+# Bundled, deliberately restricted bridge between the DMS widget and Mihomo.
+set -eu
+
+api='http://127.0.0.1:9090'
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-dms"
+history_file="$state_dir/delay-history.json"
+
+encoded_name() {
+  jq -rn --arg value "$1" '$value | @uri'
+}
+
+api_get() {
+  curl -fsS --max-time 3 "$api$1"
+}
+
+groups_json() {
+  printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))'
+}
+
+status() {
+  selected_groups=$(groups_json "$@")
+  proxies=$(api_get /proxies)
+  history=$(cat "$history_file" 2>/dev/null || printf '%s' '{}')
+  printf '%s' "$proxies" | jq --argjson history "$history" --argjson groups "$selected_groups" '
+    .proxies as $p |
+    ($groups | map(select($p[.].type == "Selector"))) as $selectorGroups |
+    def choices($group): $p[$group].all // [];
+    def resolved($name):
+      if $name == "" then ""
+      elif ($p[$name].now // "") != "" then $p[$name].now
+      else $name
+      end;
+    def stat($name):
+      (resolved($name)) as $display |
+      {name: $name, displayName: $display, history: ($history[$display] // $history[$name] // [])};
+    {
+      active: true,
+      groups: [
+        $selectorGroups[] as $group |
+        ($p[$group].now // "") as $current |
+        {
+          name: $group,
+          type: ($p[$group].type // ""),
+          current: $current,
+          shownCurrent: resolved($current),
+          choices: choices($group)
+        }
+      ],
+      stats: ([
+        $selectorGroups[] as $group |
+        choices($group)[] |
+        stat(.)
+      ] | unique_by(.name))
+    }'
+}
+
+select_proxy() {
+  group=${1:?group is required}
+  target=${2:?target is required}
+  proxies=$(api_get /proxies)
+  if ! printf '%s' "$proxies" | jq -e --arg group "$group" --arg target "$target" \
+      '.proxies[$group].all | index($target) != null' >/dev/null; then
+    printf '%s\n' '{"ok":false,"error":"Proxy is not available in this group"}'
+    return 2
+  fi
+
+  group_path=$(encoded_name "$group")
+  payload=$(jq -n --arg name "$target" '{name: $name}')
+  curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' \
+    --data "$payload" "$api/proxies/$group_path" >/dev/null
+  jq -n --arg group "$group" --arg target "$target" '{ok:true, group:$group, target:$target}'
+}
+
+delay() {
+  group=${1:?group is required}
+  group_path=$(encoded_name "$group")
+  response=$(curl -fsS --max-time 8 -G \
+    --data-urlencode 'url=https://www.gstatic.com/generate_204' \
+    --data-urlencode 'timeout=5000' \
+    "$api/proxies/$group_path/delay" 2>/dev/null || true)
+  value=$(printf '%s' "$response" | jq -r '.delay // -1' 2>/dev/null || printf '%s' -1)
+  case "$value" in ''|*[!0-9-]*) value=-1 ;; esac
+  jq -n --arg group "$group" --argjson delay "$value" '{group:$group, delay:$delay}'
+}
+
+probe_one() {
+  name=$1
+  provider=${2:-}
+  name_path=$(encoded_name "$name")
+  if [ -n "$provider" ]; then
+    provider_path=$(encoded_name "$provider")
+    endpoint="$api/providers/proxies/$provider_path/$name_path/healthcheck"
+  else
+    endpoint="$api/proxies/$name_path/delay"
+  fi
+  response=$(curl -fsS --max-time 8 -G \
+    --data-urlencode 'url=https://www.gstatic.com/generate_204' \
+    --data-urlencode 'timeout=5000' \
+    "$endpoint" 2>/dev/null || true)
+  value=$(printf '%s' "$response" | jq -r '.delay // -1' 2>/dev/null || printf '%s' -1)
+  case "$value" in ''|*[!0-9-]*) value=-1 ;; esac
+  jq -n --arg name "$name" --argjson delay "$value" '{name:$name, delay:$delay}'
+}
+
+ping_all() {
+  selected_groups=$(groups_json "$@")
+  proxies=$(api_get /proxies)
+  provider_data=$(api_get /providers/proxies 2>/dev/null || printf '%s' '{"providers":{}}')
+  probe_records=$(printf '%s' "$proxies" | jq -r --argjson groups "$selected_groups" --argjson providerData "$provider_data" '
+    .proxies as $p |
+    def provider_for($name):
+      ([($providerData.providers // {}) | to_entries[] |
+        select(.value.vehicleType != "Compatible") |
+        select((.value.proxies // [] | map(.name) | index($name)) != null) |
+        .key][0] // "");
+    def leaves($name; $seen):
+      if ($seen | index($name)) != null then empty
+      elif (($p[$name].all // []) | length) > 0 then
+        $p[$name].all[] | leaves(.; $seen + [$name])
+      else $name
+      end;
+    [$groups[] as $group |
+      if $p[$group].type == "Selector" then leaves($group; []) else empty end
+    ] | unique[] as $name |
+    [$name, provider_for($name)] | @tsv')
+  temp_dir=$(mktemp -d "${TMPDIR:-/tmp}/mihomo-dms.XXXXXX")
+  trap 'rm -rf "$temp_dir"' EXIT HUP INT TERM
+  batch=0
+  sequence=0
+  tab=$(printf '\t')
+  while IFS="$tab" read -r name provider; do
+    [ -n "$name" ] || continue
+    sequence=$((sequence + 1))
+    (probe_one "$name" "$provider" > "$temp_dir/$sequence.json") &
+    batch=$((batch + 1))
+    if [ "$batch" -ge 6 ]; then
+      wait
+      batch=0
+    fi
+  done <<EOF
+$probe_records
+EOF
+  wait
+  if [ "$sequence" -eq 0 ]; then
+    printf '%s\n' '{"ok":true,"results":[]}'
+    return
+  fi
+  results=$(jq -s '.' "$temp_dir"/*.json)
+  mkdir -p "$state_dir"
+  old=$(cat "$history_file" 2>/dev/null || printf '%s' '{}')
+  now=$(date +%s)
+  updated=$(jq -n --argjson old "$old" --argjson results "$results" --argjson now "$now" '
+    reduce $results[] as $result ($old;
+      .[$result.name] = ((.[$result.name] // []) + [{at:$now, delay:$result.delay}] | .[-8:])
+    )')
+  printf '%s\n' "$updated" > "$history_file"
+  jq -n --argjson results "$results" '{ok:true, results:$results}'
+}
+
+groups() {
+  api_get /proxies | jq '
+    .proxies | to_entries |
+    map(select(.value.type == "Selector")) |
+    map({name: .key, type: .value.type})'
+}
+
+restart() {
+  curl -fsS --max-time 5 -X POST "$api/restart" >/dev/null
+  printf '%s\n' '{"ok":true}'
+}
+
+action=${1:-status}
+if [ "$#" -gt 0 ]; then
+  shift
+fi
+
+case $action in
+  status) status "$@" ;;
+  select) select_proxy "${1:-}" "${2:-}" ;;
+  delay) delay "${1:-}" ;;
+  ping-all) ping_all "$@" ;;
+  groups) groups ;;
+  restart) restart ;;
+  *) printf '%s\n' '{"ok":false,"error":"Unknown action"}'; exit 2 ;;
+esac

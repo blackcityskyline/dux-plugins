@@ -1,0 +1,17 @@
+{
+  // DMS exposes its own QML modules as qs.* at runtime. qmlls does not know
+  // that mapping by itself, so give the editor the development import bridge.
+  "lsp": {
+    "qmljs": {
+      "binary": {
+        "path": "/usr/bin/qmlls6",
+        "arguments": [
+          "-I",
+          "dev-imports",
+          "-I",
+          "/usr/lib/qt6/qml"
+        ]
+      }
+    }
+  }
+}

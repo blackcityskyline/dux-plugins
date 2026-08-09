@@ -1,7 +1,12 @@
 # Project workflow
 
-- After every repository edit, validate both QML files with:
-  `qmllint -I dev-imports -I /usr/lib/qt6/qml plugin/MihomoVpnWidget.qml plugin/MihomoVpnSettings.qml`.
-- After validation, always reinstall/reconnect the working plugin and restart DMS with:
-  `./install-local.sh`.
-- An edit is not complete until both commands succeed. If either command cannot run, report that explicitly.
+- After documentation-only or workflow-only edits, run `make test`.
+- After runtime plugin, manifest, bridge, or component-test edits, run `make reload`.
+  It includes all static and component checks, activates the local source, and
+  hot reloads only `mihomoVpn`.
+- Use `make store` only when the user asks to return to the registry-managed
+  build or after a published update is ready.
+- A full DMS restart is a fallback handled by the workflow; do not restart the
+  shell directly during the normal edit loop.
+- An edit is not complete until the applicable command succeeds. Report any
+  validation, reload, or restoration failure explicitly.

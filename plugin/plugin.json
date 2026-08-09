@@ -2,7 +2,7 @@
   "id": "mihomoVpn",
   "name": "Mihomo VPN",
   "description": "Status and fast controls for the system Mihomo VPN",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "author": "korbash",
   "type": "widget",
   "capabilities": ["dankbar-widget", "monitoring"],

@@ -3,6 +3,8 @@ set -eu
 
 wait_seconds=${1:-15}
 output_path=${2:-"/tmp/mihomo-widget-interaction-$(date +%Y%m%d-%H%M%S).png"}
+tests_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$tests_dir/widget-test-helpers.sh"
 
 case "$wait_seconds" in
     ''|*[!0-9]*)
@@ -32,10 +34,19 @@ restore_bar() {
 }
 trap restore_bar EXIT HUP INT TERM
 
-dms ipc call bar reveal index 0 >/dev/null
-dms ipc call widget toggle mihomoVpn >/dev/null
+bar_output=$(dms ipc call bar reveal index 0 2>&1) || {
+    printf '%s\n' "$bar_output" >&2
+    exit 1
+}
+[ "$bar_output" = "BAR_SHOW_SUCCESS" ] || {
+    printf 'Could not reveal DMS bar: %s\n' "$bar_output" >&2
+    exit 1
+}
+widget_test_open_popout mihomoVpn
 printf 'Widget opened. Interact with both groups; capture in %s seconds.\n' "$wait_seconds"
 sleep "$wait_seconds"
+
+widget_test_wait_for_state mihomoVpn visible
 
 # DMS' screenshot service dismisses popouts. Niri captures the layer directly.
 niri msg action screenshot-screen \

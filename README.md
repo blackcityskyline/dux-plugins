@@ -20,6 +20,11 @@ dashboard.
 - Open a configured MetaCubeXD dashboard directly from the widget.
 - Preserve expanded groups and scroll positions across periodic API refreshes.
 
+## Known limitation
+
+In DMS connected frame mode, very rapid clicks while the popout is resizing can
+occasionally be interpreted as an outside click and dismiss the popout.
+
 ## Requirements
 
 ### Runtime
@@ -58,6 +63,7 @@ all proxy controls and latency probes.
 
 ### Development
 
+- GNU Make and Git.
 - Qt 6 QML tooling that provides `qmllint`.
 - Installed DMS QML sources at `/usr/share/quickshell/dms`; the component test
   also uses the `quickshell` executable.
@@ -66,23 +72,27 @@ all proxy controls and latency probes.
 
 - `plugin/` contains the DMS widget, settings component, and bundled
   `mihomo-dms` bridge to the local Mihomo API.
+- `Makefile` is the public interface for validation, local development, and
+  registry checkout management.
+- `scripts/plugin-workflow.sh` implements the Make targets.
 - `tests/` contains component and interactive diagnostics.
 - `dev-imports/qs` links the project tooling to the installed DMS QML sources.
 
-The local installation uses this project link:
+Local development uses this canonical project link:
 
-- `~/.config/DankMaterialShell/plugins/MihomoVpn` → `plugin/`.
+- `~/.config/DankMaterialShell/plugins/mihomoVpn` → `plugin/`.
 
 ## Installation
 
-Run the local installer from the repository root:
+Install the published plugin from the DMS registry:
 
 ```sh
-./install-local.sh
+dms plugins install mihomoVpn
 ```
 
-The installer refreshes the links above and restarts the `dms.service` systemd
-user unit. Run it after every project change.
+The registry installation keeps its checkout under the DMS `.repos` directory.
+Plugin settings and DankBar placement are stored by the `mihomoVpn` ID and are
+shared when switching between the published and local sources.
 
 ## Configuration
 
@@ -106,7 +116,119 @@ sudo mihomo -t -d /etc/mihomo -f /etc/mihomo/config.yaml
 plugin/mihomo-dms restart
 ```
 
-## QML development
+## Development workflow
+
+The root `Makefile` is the single public development interface. Its targets
+validate the project, hot reload local changes, and switch between the local
+source and the registry-managed checkout. The internal workflow script handles
+the canonical `mihomoVpn` link and DMS IPC details.
+
+```sh
+make status
+```
+
+The status command reports the active mode, link target, plugin version, and
+project revision.
+
+### Command reference
+
+| Command | Purpose |
+| --- | --- |
+| `make test` | Run QML linting, manifest and shell validation, and the component self-test without changing the active plugin source. |
+| `make local` | Validate the project, switch to the local source, and hot reload `mihomoVpn`. |
+| `make reload` | Revalidate and hot reload the local source after a development change. |
+| `make smoke SECONDS=15` | Reload local code and run the interactive input-shield test for 15 seconds. |
+| `make store` | Restore the existing registry checkout without a network request and hot reload it. |
+| `make update-store` | Validate, download the published update through DMS, activate it, and hot reload it. |
+| `make status` | Report the active mode, link target, plugin version, and project revision. |
+
+Normal development does not restart the full shell. The workflow first asks DMS
+to reload only this plugin through IPC and restarts `dms.service` once only if
+that hot reload fails.
+
+### Fixing a bug locally
+
+Start from the latest public branch and enter local mode:
+
+```sh
+git switch main
+git pull --ff-only
+make local
+```
+
+Edit the project and apply each iteration with one command:
+
+```sh
+make reload
+```
+
+This command runs all automated checks before changing the live component. For
+input, scrolling, or popout geometry changes, also run:
+
+```sh
+make smoke SECONDS=15
+```
+
+The smoke test opens a maximized normal window below DMS and verifies that the
+widget popout is visible above it. Click group headers and rows and scroll the
+lists. The test fails if the popout closes or a button or wheel event reaches
+the window underneath.
+
+Return to the already installed store version at any time, without downloading
+anything:
+
+```sh
+make store
+```
+
+Run `make local` to resume work on the project checkout.
+
+### Publishing a new version
+
+After the fix passes local and smoke testing, update `version` in
+`plugin/plugin.json` according to [Semantic Versioning](https://semver.org/).
+Increment `PATCH` for a compatible bug fix and `MINOR` for new compatible
+functionality. For example, the next patch after `1.2.1` is `1.2.2`.
+
+Run the release checks and inspect the final changes:
+
+```sh
+make test
+git diff --check
+git diff
+```
+
+Commit, tag, and push the same version:
+
+```sh
+git add plugin/plugin.json plugin/MihomoVpnWidget.qml
+git commit -m "Fix popout input handling"
+git tag -a v1.2.2 -m "Mihomo DMS Widget 1.2.2"
+git push origin main
+git push origin v1.2.2
+```
+
+Include every file belonging to the release in `git add`; the command above is
+only an example for a widget-only fix. Once the push is visible, update the
+registry-managed checkout and leave the machine in store mode:
+
+```sh
+make update-store
+make status
+```
+
+The plugin is already registered, so regular releases update the existing
+repository rather than adding another registry entry.
+
+### Recovering from a release problem
+
+Before `update-store`, `make store` immediately returns to the previously
+installed store checkout. After a faulty version has been published and
+installed, revert the faulty commit, increment the patch version again, repeat
+the tests, and publish a new tag. Preserve public Git history instead of moving
+or force-pushing an existing release tag.
+
+## QML tooling
 
 The repository includes `.zed/settings.json` and
 `mihomo-dms-widget.qmlproject`. They configure `qmlls6` with the Qt modules and
@@ -120,24 +242,32 @@ ln -sfn /usr/share/quickshell/dms dev-imports/qs
 ```
 
 Restart the language server in Zed after changing the editor configuration.
-Run the static QML validation from the repository root:
+Run the complete project validation from the repository root:
 
 ```sh
-qmllint -I dev-imports -I /usr/lib/qt6/qml plugin/MihomoVpnWidget.qml plugin/MihomoVpnSettings.qml
+make test
 ```
 
 ## Tests
 
-The component test uses the standard project dependencies. Interactive capture
-uses niri, while pointer calibration uses `ydotool`; both tools are optional and
-only support the diagnostic scripts below.
-
-Run the component self-test to cover independent group expansion, boundary
-sizes, long-list interaction, and scroll-position stability:
+Run the complete automated test suite. It includes the component checks for
+independent group expansion, boundary sizes, long-list interaction, and
+scroll-position stability:
 
 ```sh
-./tests/run-component-selftest.sh
+make test
 ```
+
+Run the Wayland input-shield smoke test through the development workflow:
+
+```sh
+make smoke SECONDS=15
+```
+
+This is an interactive test: use the widget during the displayed interval. A
+pass means no click or wheel event reached the normal window below DMS.
+
+### Optional diagnostics
 
 Run an interactive capture to open the widget, allow time for clicks and
 scrolling, and capture the screen directly through niri. The direct capture
@@ -145,14 +275,6 @@ keeps the popout visible throughout the screenshot:
 
 ```sh
 ./tests/capture-widget-interaction.sh 15 /tmp/mihomo-widget.png
-```
-
-Measure the effective `ydotool` movement under the current niri pointer
-acceleration before building automated pointer tests. The calibrator performs
-pointer movement only:
-
-```sh
-./tests/calibrate-pointer.sh 800 54
 ```
 
 ## Project goals

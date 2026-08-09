@@ -18,6 +18,7 @@ PluginComponent {
     property string pingText: ""
     property var stats: []
     property int refreshGeneration: 0
+    property var popoutTarget: null
 
     readonly property string helper: Paths.strip(Qt.resolvedUrl("mihomo-dms"))
     readonly property url dashboardUrl: "http://127.0.0.1:9090/ui/"
@@ -301,24 +302,14 @@ PluginComponent {
     popoutContent: Component {
         PopoutComponent {
             id: popup
-            property bool resizeGuardActive: false
 
             headerText: "Mihomo VPN"
             detailsText: ""
             showCloseButton: false
 
-            function beginResizeGuard() {
-                if (!parentPopout || !parentPopout.shouldBeVisible)
-                    return;
-                resizeGuardActive = true;
-                parentPopout.backgroundInteractive = false;
-                resizeGuardTimer.restart();
-            }
-
             function commitGeometry() {
                 if (!parentPopout || !parentPopout.shouldBeVisible)
                     return;
-                beginResizeGuard();
                 Qt.callLater(() => {
                     if (parentPopout && parentPopout.shouldBeVisible)
                         parentPopout.updateSurfacePosition();
@@ -327,29 +318,16 @@ PluginComponent {
 
             onImplicitHeightChanged: commitGeometry()
 
-            Timer {
-                id: resizeGuardTimer
-                interval: 320
-                repeat: false
-                onTriggered: {
-                    if (!popup.parentPopout)
-                        return;
-                    if (popup.parentPopout.shouldBeVisible)
-                        popup.parentPopout.updateSurfacePosition();
-                    popup.parentPopout.backgroundInteractive = true;
-                    popup.resizeGuardActive = false;
-                }
-            }
-
             // DMS otherwise interpolates both height and Y position when a
             // group opens, making the entire surface visibly travel.
             onParentPopoutChanged: {
+                root.popoutTarget = parentPopout;
                 if (parentPopout) {
                     parentPopout.animationDuration = 0;
                     parentPopout.suspendShadowWhileResizing = true;
-                    parentPopout.backgroundInteractive = true;
                 }
             }
+
             headerActions: Component {
                 Row {
                     spacing: Theme.spacingXS
@@ -512,7 +490,6 @@ PluginComponent {
                                     hoverEnabled: true
                                     cursorShape: Qt.PointingHandCursor
                                     enabled: groupCard.additionalChoices.length > 0
-                                    onPressed: popup.beginResizeGuard()
                                     onClicked: root.toggleGroup(groupCard.groupName)
                                 }
                             }

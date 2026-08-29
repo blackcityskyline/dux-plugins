@@ -123,6 +123,7 @@ run_checks() {
             sh -n "$shell_script"
         done
         git diff --check
+        ./tests/run-bridge-selftest.sh
         ./tests/run-component-selftest.sh
     )
     printf 'Checks passed.\n'

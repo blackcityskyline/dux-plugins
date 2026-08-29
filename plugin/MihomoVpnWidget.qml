@@ -10,6 +10,8 @@ PluginComponent {
     id: root
 
     property bool active: false
+    property bool available: false
+    property bool toggling: false
     property bool pinging: false
     property bool restarting: false
     property var groupStates: []
@@ -113,6 +115,7 @@ PluginComponent {
             if (generation !== refreshGeneration || requestKey !== JSON.stringify(configuredGroups))
                 return;
             if (exitCode !== 0) {
+                available = false;
                 active = false;
                 applyGroupStates([]);
                 applyStats([]);
@@ -120,15 +123,38 @@ PluginComponent {
             }
             try {
                 const data = JSON.parse(output);
+                available = true;
                 active = data.active === true;
                 applyGroupStates(data.groups);
                 applyStats(data.stats);
             } catch (error) {
+                available = false;
                 active = false;
                 applyGroupStates([]);
                 applyStats([]);
             }
         }, 0, 5000);
+    }
+
+    function toggleVpn() {
+        if (!available || toggling)
+            return;
+        const requestedState = active ? "off" : "on";
+        toggling = true;
+        Proc.runCommand("mihomoVpn.setVpn", [helper, "set-vpn", requestedState], (output, exitCode) => {
+            toggling = false;
+            if (exitCode === 0) {
+                try {
+                    const result = JSON.parse(output);
+                    active = result.active === true;
+                } catch (error) {
+                }
+                showInfo("Mihomo VPN", active ? "VPN enabled" : "VPN disabled: direct traffic");
+            } else {
+                showInfo("Mihomo VPN", "Failed to change VPN mode");
+            }
+            refresh();
+        }, 0, 7000);
     }
 
     function select(group, target) {
@@ -331,6 +357,42 @@ PluginComponent {
             headerActions: Component {
                 Row {
                     spacing: Theme.spacingXS
+                    Rectangle {
+                        id: vpnSwitch
+                        objectName: "vpnModeSwitch"
+                        width: 64
+                        height: 32
+                        radius: height / 2
+                        color: root.active ? Theme.withAlpha(Theme.primary, 0.28) : Theme.surfaceContainerHigh
+                        border.width: 1
+                        border.color: root.active ? Theme.primary : Theme.outlineVariant
+                        opacity: root.toggling ? 0.65 : 1
+
+                        Rectangle {
+                            width: 24
+                            height: 24
+                            radius: width / 2
+                            x: root.active ? parent.width - width - 4 : 4
+                            anchors.verticalCenter: parent.verticalCenter
+                            color: root.active ? Theme.primary : Theme.surfaceVariantText
+                            Behavior on x {
+                                NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                            }
+                        }
+                        MouseArea {
+                            id: vpnSwitchArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            enabled: root.available && !root.toggling
+                            onClicked: root.toggleVpn()
+                        }
+                        ToolTip.visible: vpnSwitchArea.containsMouse
+                        ToolTip.text: !root.available
+                            ? "Mihomo API is unavailable"
+                            : (root.active ? "Disable VPN and route directly" : "Enable VPN")
+                    }
+                    Item { width: Theme.spacingS; height: 1 }
                     Rectangle {
                         width: 32; height: 32; radius: Theme.cornerRadius
                         color: pingArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh

@@ -5,6 +5,7 @@ set -eu
 api='http://127.0.0.1:9090'
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-dms"
 history_file="$state_dir/delay-history.json"
+previous_mode_file="$state_dir/previous-mode"
 
 encoded_name() {
   jq -rn --arg value "$1" '$value | @uri'
@@ -20,9 +21,10 @@ groups_json() {
 
 status() {
   selected_groups=$(groups_json "$@")
+  mode=$(api_get /configs | jq -r '.mode // "rule"' | tr '[:upper:]' '[:lower:]')
   proxies=$(api_get /proxies)
   history=$(cat "$history_file" 2>/dev/null || printf '%s' '{}')
-  printf '%s' "$proxies" | jq --argjson history "$history" --argjson groups "$selected_groups" '
+  printf '%s' "$proxies" | jq --arg mode "$mode" --argjson history "$history" --argjson groups "$selected_groups" '
     .proxies as $p |
     ($groups | map(select($p[.].type == "Selector"))) as $selectorGroups |
     def choices($group): $p[$group].all // [];
@@ -35,7 +37,8 @@ status() {
       (resolved($name)) as $display |
       {name: $name, displayName: $display, history: ($history[$display] // $history[$name] // [])};
     {
-      active: true,
+      active: ($mode != "direct"),
+      mode: $mode,
       groups: [
         $selectorGroups[] as $group |
         ($p[$group].now // "") as $current |
@@ -53,6 +56,51 @@ status() {
         stat(.)
       ] | unique_by(.name))
     }'
+}
+
+set_vpn() {
+  requested=${1:?state is required}
+  current=$(api_get /configs | jq -r '.mode // "rule"' | tr '[:upper:]' '[:lower:]')
+
+  case "$requested" in
+    on)
+      if [ "$current" != direct ]; then
+        jq -n --arg mode "$current" '{ok:true, active:true, mode:$mode}'
+        return
+      fi
+      target=$(cat "$previous_mode_file" 2>/dev/null || printf '%s' rule)
+      case "$target" in
+        rule|global) ;;
+        *) target=rule ;;
+      esac
+      ;;
+    off)
+      if [ "$current" = direct ]; then
+        printf '%s\n' '{"ok":true,"active":false,"mode":"direct"}'
+        return
+      fi
+      case "$current" in
+        rule|global) ;;
+        *) current=rule ;;
+      esac
+      target=direct
+      ;;
+    *)
+      printf '%s\n' '{"ok":false,"error":"State must be on or off"}'
+      return 2
+      ;;
+  esac
+
+  payload=$(jq -n --arg mode "$target" '{mode:$mode}')
+  curl -fsS --max-time 5 -X PATCH -H 'Content-Type: application/json' \
+    --data "$payload" "$api/configs" >/dev/null
+  if [ "$requested" = off ]; then
+    mkdir -p "$state_dir"
+    printf '%s\n' "$current" > "$previous_mode_file"
+    printf '%s\n' '{"ok":true,"active":false,"mode":"direct"}'
+  else
+    jq -n --arg mode "$target" '{ok:true, active:true, mode:$mode}'
+  fi
 }
 
 select_proxy() {
@@ -177,6 +225,7 @@ fi
 
 case $action in
   status) status "$@" ;;
+  set-vpn) set_vpn "${1:-}" ;;
   select) select_proxy "${1:-}" "${2:-}" ;;
   delay) delay "${1:-}" ;;
   ping-all) ping_all "$@" ;;

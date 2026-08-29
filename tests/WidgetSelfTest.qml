@@ -44,6 +44,20 @@ ShellRoot {
         return null;
     }
 
+    function findObject(item, name) {
+        if (!item)
+            return null;
+        if (item.objectName === name)
+            return item;
+        const itemChildren = item.children || [];
+        for (let i = 0; i < itemChildren.length; i++) {
+            const match = findObject(itemChildren[i], name);
+            if (match)
+                return match;
+        }
+        return null;
+    }
+
     function cleanUp() {
         if (popup)
             popup.destroy();
@@ -137,6 +151,10 @@ ShellRoot {
 
             popup = widget.popoutContent.createObject(null, {width: 400});
             assertTrue(popup !== null, "popout content could not be created");
+            const vpnSwitch = findObject(popup, "vpnModeSwitch");
+            assertTrue(vpnSwitch !== null, "VPN mode switch was not instantiated");
+            assertTrue(vpnSwitch.width > 32 && vpnSwitch.radius === vpnSwitch.height / 2,
+                "VPN mode switch is not an elongated radio control");
             Qt.callLater(finishGeometryTest);
         } catch (error) {
             console.error("MIHOMO_SELFTEST_FAIL", error.message);

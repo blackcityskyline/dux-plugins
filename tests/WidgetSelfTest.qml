@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import qs.Common
 import "plugin" as Mihomo
 import "plugin/UiText.js" as UiText
@@ -26,9 +27,10 @@ ShellRoot {
         }
     }
 
-    Component {
-        id: settingsComponent
-        Mihomo.MihomoVpnSettings {}
+    FileView {
+        id: pluginManifest
+        path: Qt.resolvedUrl("plugin/plugin.json")
+        blockLoading: true
     }
 
     QtObject {
@@ -46,6 +48,11 @@ ShellRoot {
     }
 
     function testSettingsAndStartup() {
+        const manifest = JSON.parse(pluginManifest.text());
+        assertTrue(manifest.settings.endsWith("?v=" + manifest.version),
+            "settings URL is not versioned; DMS can reuse stale settings after an update");
+        const settingsComponent = Qt.createComponent(Qt.resolvedUrl("plugin/" + manifest.settings));
+        assertTrue(settingsComponent.status === Component.Ready, settingsComponent.errorString());
         const settings = settingsComponent.createObject(null, {width: 500, pluginService: settingsService});
         settings.availableGroups = ["GLOBAL", "Foreign", "Russia"].map(name => ({name: name, type: "Selector"}));
         settings.loadSavedGroups();

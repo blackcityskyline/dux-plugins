@@ -209,6 +209,9 @@ Run `make local` to resume work on the project checkout.
 
 After the fix passes local and smoke testing, update `version` in
 `plugin/plugin.json` according to [Semantic Versioning](https://semver.org/).
+Update the `?v=` suffix in the manifest's `settings` URL to the same version.
+DMS caches settings components separately from widgets, so each release needs
+a new settings URL. The workflow rescans the plugin manifest before hot reload.
 Increment `PATCH` for a compatible bug fix and `MINOR` for new compatible
 functionality. For example, the next patch after `1.2.1` is `1.2.2`.
 

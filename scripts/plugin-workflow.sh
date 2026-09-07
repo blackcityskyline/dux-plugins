@@ -160,6 +160,16 @@ reload_plugin() {
     require_command "$dms_bin"
     require_command timeout
 
+    # Reload alone reuses the old manifest (including the settings URL).
+    # Rescan only this plugin before busting the widget component cache.
+    rescan_output=$(timeout 5s "$dms_bin" ipc call plugin-scan rescan "$plugin_id" 2>&1) \
+        || die "Could not rescan $plugin_id: $rescan_output"
+    case "$rescan_output" in
+        "RESCAN_TRIGGERED: $plugin_id") ;;
+        *) die "Could not rescan $plugin_id: $rescan_output" ;;
+    esac
+    wait_for_plugin 30 || die "Plugin did not load after manifest rescan"
+
     reload_output=''
     if reload_output=$(timeout 5s "$dms_bin" ipc call plugin-scan reload "$plugin_id" 2>&1); then
         printf '%s\n' "$reload_output"

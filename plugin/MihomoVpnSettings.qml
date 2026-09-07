@@ -13,13 +13,16 @@ PluginSettings {
     property string apiError: ""
     property bool loadingGroups: false
     property bool needsInitialSelection: false
-    readonly property var orderedGroupNames: selectedGroups.concat(
+    property string draggingGroup: ""
+    property var previewGroups: []
+    readonly property var orderedGroupNames: (draggingGroup ? previewGroups : selectedGroups).concat(
         availableGroups.map(group => group.name).filter(name => selectedGroups.indexOf(name) < 0))
     readonly property int groupRowStep: 36 + Theme.spacingS
 
     readonly property string helper: Paths.strip(Qt.resolvedUrl("mihomo-dms"))
 
     function loadSavedGroups() {
+        cancelDrag();
         const savedGroups = loadValue("visibleGroups", null);
         needsInitialSelection = !Array.isArray(savedGroups);
         selectedGroups = Array.isArray(savedGroups) ? savedGroups.slice() : [];
@@ -86,6 +89,41 @@ PluginSettings {
         const item = next.splice(at, 1)[0]; next.splice(target, 0, item);
         selectedGroups = next; saveGroups();
     }
+
+    function beginDrag(name) {
+        if (selectedGroups.indexOf(name) < 0)
+            return;
+        previewGroups = selectedGroups.slice();
+        draggingGroup = name;
+    }
+
+    function updateDragTarget(centerY) {
+        if (!draggingGroup)
+            return;
+        // Same center/slot threshold as DMS WidgetsTabSection.slotIndexForY.
+        const target = Math.max(0, Math.min(selectedGroups.length - 1,
+            Math.floor((centerY + groupRowStep / 2) / groupRowStep)));
+        const next = previewGroups.slice();
+        const from = next.indexOf(draggingGroup);
+        if (from < 0 || from === target)
+            return;
+        next.splice(from, 1);
+        next.splice(target, 0, draggingGroup);
+        previewGroups = next;
+    }
+
+    function commitDrag() {
+        if (draggingGroup)
+            moveTo(draggingGroup, previewGroups.indexOf(draggingGroup));
+        cancelDrag();
+    }
+
+    function cancelDrag() {
+        draggingGroup = "";
+        previewGroups = [];
+    }
+
+    onAvailableGroupsChanged: cancelDrag()
     Component.onCompleted: {
         if (pluginService)
             loadSavedGroups();
@@ -148,20 +186,56 @@ PluginSettings {
                 id: groupSlot
                 required property var modelData
                 readonly property bool selected: root.selectedGroups.indexOf(modelData.name) >= 0
+                readonly property bool dragging: root.draggingGroup === modelData.name
                 width: groupsList.width
                 height: 36
-                y: root.orderedGroupNames.indexOf(modelData.name) * root.groupRowStep
-                z: groupMouse.drag.active ? 1 : 0
+                z: dragging ? 100 : 0
+
+                Binding {
+                    target: groupSlot
+                    property: "y"
+                    value: root.orderedGroupNames.indexOf(groupSlot.modelData.name) * root.groupRowStep
+                    when: !groupSlot.dragging
+                    restoreMode: Binding.RestoreNone
+                }
+
+                onYChanged: {
+                    if (dragging)
+                        root.updateDragTarget(y + height / 2);
+                }
+
+                // Match DMS's widget-section reorder motion, including its
+                // spatial overshoot. The held row follows the pointer directly.
+                Behavior on y {
+                    enabled: !groupSlot.dragging
+                    NumberAnimation {
+                        duration: Theme.expressiveDurations.expressiveDefaultSpatial
+                        easing.type: Easing.BezierSpline
+                        easing.bezierCurve: Theme.expressiveCurves.expressiveFastSpatial
+                    }
+                }
 
                 Rectangle {
                     id: groupRow
                     objectName: "settingsGroup:" + groupSlot.modelData.name
                     width: parent.width
                     height: parent.height
-                    radius: Theme.cornerRadius
-                    color: groupSlot.selected ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-                    border.width: groupMouse.drag.active ? 1 : 0
+                    scale: groupSlot.dragging ? 1.02 : 1.0
+                    radius: groupSlot.dragging ? Theme.cornerRadius + 6 : Theme.cornerRadius
+                    color: groupSlot.dragging ? Theme.secondaryContainer
+                        : (groupSlot.selected ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh)
+                    border.width: groupSlot.dragging ? 2 : 0
                     border.color: Theme.primary
+
+                    Behavior on scale {
+                        NumberAnimation { duration: Theme.shortDuration; easing.type: Easing.OutCubic }
+                    }
+                    Behavior on radius {
+                        NumberAnimation { duration: Theme.shortDuration; easing.type: Easing.OutCubic }
+                    }
+                    Behavior on color {
+                        ColorAnimation { duration: Theme.shortDuration }
+                    }
 
                     StyledText {
                         anchors.left: parent.left
@@ -195,19 +269,21 @@ PluginSettings {
                     MouseArea {
                         id: groupMouse
                         anchors.fill: parent
-                        cursorShape: drag.active ? Qt.ClosedHandCursor : (groupSlot.selected ? Qt.OpenHandCursor : Qt.PointingHandCursor)
-                        drag.target: groupSlot.selected ? groupRow : null
+                        cursorShape: groupSlot.dragging ? Qt.ClosedHandCursor : (groupSlot.selected ? Qt.OpenHandCursor : Qt.PointingHandCursor)
+                        drag.target: groupSlot.selected ? groupSlot : null
                         drag.axis: Drag.YAxis
-                        drag.minimumY: -groupSlot.y
-                        drag.maximumY: (root.selectedGroups.length - 1) * root.groupRowStep - groupSlot.y
+                        drag.minimumY: 0
+                        drag.maximumY: (root.selectedGroups.length - 1) * root.groupRowStep
+                        drag.smoothed: false
+                        preventStealing: groupSlot.selected
+                        onPressed: root.beginDrag(groupSlot.modelData.name)
                         onReleased: {
-                            if (drag.active) {
-                                const target = Math.round((groupSlot.y + groupRow.y) / root.groupRowStep);
-                                groupRow.y = 0;
-                                root.moveTo(groupSlot.modelData.name, target);
-                            }
+                            if (drag.active)
+                                root.commitDrag();
+                            else
+                                root.cancelDrag();
                         }
-                        onCanceled: groupRow.y = 0
+                        onCanceled: root.cancelDrag()
                         onClicked: root.toggleGroup(groupSlot.modelData.name)
                     }
                 }

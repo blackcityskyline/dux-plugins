@@ -43,24 +43,57 @@ ShellRoot {
             name: "MihomoSettings"
             when: testWindow.visible
 
+            function settleRows() {
+                wait(Math.max(Theme.expressiveDurations.expressiveDefaultSpatial, Theme.shortDuration) + 80);
+            }
+
             function test_dragAndToggle() {
-                wait(100);
+                settleRows();
                 const foreign = findChild(settings, "settingsGroup:Foreign");
                 const russia = findChild(settings, "settingsGroup:Russia");
                 const global = findChild(settings, "settingsGroup:GLOBAL");
                 verify(foreign !== null && russia !== null && global !== null);
-                mouseDrag(foreign, 100, 18, 0, settings.groupRowStep);
+                // Hold the pointer down: neighbors must make space before drop,
+                // without persisting a temporary order or moving disabled rows.
+                const start = foreign.mapToItem(settings, 100, 18);
+                const oldRussiaY = russia.mapToItem(settings, 0, 0).y;
+                const oldGlobalY = global.mapToItem(settings, 0, 0).y;
+                mousePress(settings, start.x, start.y);
+                mouseMove(settings, start.x, start.y + 15, 20);
+                mouseMove(settings, start.x, start.y + settings.groupRowStep + 8, 20);
+                settleRows();
+                compare(service.groups, ["Foreign", "Russia"]);
+                compare(settings.previewGroups, ["Russia", "Foreign"]);
+                verify(russia.mapToItem(settings, 0, 0).y < oldRussiaY - settings.groupRowStep / 2,
+                    "neighbor did not move out of the held row's way");
+                compare(global.mapToItem(settings, 0, 0).y, oldGlobalY);
+                verify(foreign.scale > 1, "held row did not lift like DMS widget cards");
+                mouseRelease(settings, start.x, start.y + settings.groupRowStep + 8);
                 compare(service.groups, ["Russia", "Foreign"]);
+                settleRows();
                 verify(russia.mapToItem(settings, 0, 0).y < foreign.mapToItem(settings, 0, 0).y);
                 mouseDrag(foreign, 100, 18, 0, -settings.groupRowStep);
                 compare(service.groups, ["Foreign", "Russia"]);
+                settleRows();
+
+                settings.beginDrag("Foreign");
+                settings.updateDragTarget(settings.groupRowStep + 18);
+                settleRows();
+                settings.cancelDrag();
+                settleRows();
+                compare(service.groups, ["Foreign", "Russia"]);
+                verify(foreign.mapToItem(settings, 0, 0).y < russia.mapToItem(settings, 0, 0).y,
+                    "cancel did not restore the saved order");
+
                 mouseClick(foreign, 100, 18);
                 compare(service.groups, ["Russia"]);
+                settleRows();
                 verify(foreign.mapToItem(settings, 0, 0).y > russia.mapToItem(settings, 0, 0).y);
                 mouseClick(global, 100, 18);
                 compare(service.groups, ["Russia", "GLOBAL"]);
+                settleRows();
                 verify(global.mapToItem(settings, 0, 0).y < foreign.mapToItem(settings, 0, 0).y);
-                console.warn("MIHOMO_SETTINGS_SELFTEST_PASS drag-up drag-down click-toggle disabled-last");
+                console.warn("MIHOMO_SETTINGS_SELFTEST_PASS live-displacement lift cancel drag-up drag-down click-toggle disabled-last");
             }
         }
     }

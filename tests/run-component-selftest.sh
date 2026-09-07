@@ -4,6 +4,9 @@ set -eu
 tests_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 project_dir=$(CDPATH= cd -- "$tests_dir/.." && pwd)
 dms_qml_root=${DMS_QML_ROOT:-/usr/share/quickshell/dms}
+if [ -z "${DMS_QML_ROOT:-}" ] && [ ! -d "$dms_qml_root" ]; then
+    dms_qml_root="$project_dir/dev-imports/qs"
+fi
 temp_root=${TMPDIR:-/tmp}
 runtime_dir=$(mktemp -d "$temp_root/mihomo-widget-selftest.XXXXXX")
 
@@ -33,8 +36,10 @@ done
     exit 1
 }
 
-cp -a "$dms_qml_root/." "$runtime_dir/"
+# Embedded DMS resources are read-only; the test copy must accept our harness.
+cp -a --no-preserve=mode "$dms_qml_root/." "$runtime_dir/"
 cp "$tests_dir/WidgetSelfTest.qml" "$runtime_dir/WidgetSelfTest.qml"
+cp "$tests_dir/SettingsSelfTest.qml" "$runtime_dir/SettingsSelfTest.qml"
 ln -s "$project_dir/plugin" "$runtime_dir/plugin"
 
 if test_output=$(env QT_QPA_PLATFORM=wayland timeout 20s \
@@ -47,5 +52,17 @@ printf '%s\n' "$test_output"
 
 if [ "$test_status" -ne 0 ] || ! printf '%s\n' "$test_output" | grep -q 'MIHOMO_SELFTEST_PASS'; then
     printf 'Mihomo widget self-test failed\n' >&2
+    exit 1
+fi
+
+if settings_output=$(env QT_QPA_PLATFORM=wayland timeout 20s \
+        quickshell --no-color -p "$runtime_dir/SettingsSelfTest.qml" 2>&1); then
+    settings_status=0
+else
+    settings_status=$?
+fi
+printf '%s\n' "$settings_output"
+if [ "$settings_status" -ne 0 ] || ! printf '%s\n' "$settings_output" | grep -q 'MIHOMO_SETTINGS_SELFTEST_PASS'; then
+    printf 'Mihomo settings interaction test failed\n' >&2
     exit 1
 fi

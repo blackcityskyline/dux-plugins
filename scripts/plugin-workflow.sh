@@ -11,6 +11,7 @@ plugin_link="$plugin_dir/$plugin_id"
 plugin_source="$project_dir/plugin"
 plugin_meta="$plugin_dir/$plugin_id.meta"
 legacy_plugin_link="$plugin_dir/MihomoVpn"
+dms_bin=${DMS_BIN:-dms}
 
 die() {
     printf 'Error: %s\n' "$*" >&2
@@ -55,9 +56,14 @@ resolve_store_source() {
 }
 
 ensure_tooling_link() {
-    [ -d /usr/share/quickshell/dms ] || die "DMS QML sources are missing at /usr/share/quickshell/dms"
+    dms_qml_root=${DMS_QML_ROOT:-/usr/share/quickshell/dms}
+    if [ -z "${DMS_QML_ROOT:-}" ] && [ ! -d "$dms_qml_root" ] && [ -d "$project_dir/dev-imports/qs" ]; then
+        dms_qml_root=$(readlink -f "$project_dir/dev-imports/qs")
+    fi
+    [ -d "$dms_qml_root" ] || die "DMS QML sources are missing at $dms_qml_root; set DMS_QML_ROOT to the running shell's QML directory"
     mkdir -p "$project_dir/dev-imports"
-    ln -sfn /usr/share/quickshell/dms "$project_dir/dev-imports/qs"
+    ln -sfn "$dms_qml_root" "$project_dir/dev-imports/qs"
+    export DMS_QML_ROOT="$dms_qml_root"
 }
 
 replace_plugin_link() {
@@ -130,7 +136,7 @@ run_checks() {
 }
 
 plugin_is_loaded() {
-    plugin_status=$(timeout 3s dms ipc call plugin-scan status "$plugin_id" 2>/dev/null || true)
+    plugin_status=$(timeout 3s "$dms_bin" ipc call plugin-scan status "$plugin_id" 2>/dev/null || true)
     case "$plugin_status" in
         loaded*) return 0 ;;
         *) return 1 ;;
@@ -151,11 +157,11 @@ wait_for_plugin() {
 }
 
 reload_plugin() {
-    require_command dms
+    require_command "$dms_bin"
     require_command timeout
 
     reload_output=''
-    if reload_output=$(timeout 5s dms ipc call plugin-scan reload "$plugin_id" 2>&1); then
+    if reload_output=$(timeout 5s "$dms_bin" ipc call plugin-scan reload "$plugin_id" 2>&1); then
         printf '%s\n' "$reload_output"
         if wait_for_plugin 30; then
             printf 'Plugin reloaded without restarting DMS.\n'

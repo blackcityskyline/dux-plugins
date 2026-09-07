@@ -1,0 +1,10 @@
+// Only this root-owned, restricted binary; never authorize the subscription
+// updater or arbitrary systemctl/exec actions. Other users still authenticate.
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.korbash.mihomo.control"
+        && action.lookup("program") === "/usr/local/libexec/mihomo-vpn-control"
+        && action.lookup("user") === "root"
+        && subject.user === "korbash" && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

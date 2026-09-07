@@ -45,7 +45,7 @@ widget_test_open_popout() {
             widget_test_toggle_popout "$widget_test_id"
             widget_test_wait_for_state "$widget_test_id" hidden
             ;;
-        hidden) ;;
+        hidden|"WIDGET_NO_POPOUT: $widget_test_id") ;;
         *)
             printf 'Could not read widget %s state: %s\n' \
                 "$widget_test_id" "${widget_test_state:-unknown}" >&2

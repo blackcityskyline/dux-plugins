@@ -5,14 +5,30 @@ set -eu
 api='http://127.0.0.1:9090'
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-dms"
 history_file="$state_dir/delay-history.json"
-previous_mode_file="$state_dir/previous-mode"
+subscription_api='http://127.0.0.1:9095'
+
+subscription_status() {
+  curl --noproxy '*' -fsS --max-time 3 "$subscription_api/status" 2>/dev/null ||
+    printf '%s\n' '{"phase":"error","code":"unavailable","error":"The subscription updater is unavailable. Check capybara-updater.service."}'
+}
+
+refresh_subscription() {
+  if response=$(curl --noproxy '*' -sS --max-time 65 -X POST -H 'X-Capybara-Action: refresh' \
+      "$subscription_api/refresh" 2>/dev/null); then
+    printf '%s\n' "$response"
+    printf '%s' "$response" | jq -e '.phase == "success"' >/dev/null
+  else
+    printf '%s\n' '{"phase":"error","code":"unavailable","error":"Could not connect to the subscription updater."}'
+    return 1
+  fi
+}
 
 encoded_name() {
   jq -rn --arg value "$1" '$value | @uri'
 }
 
 api_get() {
-  curl -fsS --max-time 3 "$api$1"
+  curl --noproxy '*' -fsS --max-time 3 "$api$1"
 }
 
 groups_json() {
@@ -59,47 +75,25 @@ status() {
 }
 
 set_vpn() {
-  requested=${1:?state is required}
-  current=$(api_get /configs | jq -r '.mode // "rule"' | tr '[:upper:]' '[:lower:]')
-
-  case "$requested" in
-    on)
-      if [ "$current" != direct ]; then
-        jq -n --arg mode "$current" '{ok:true, active:true, mode:$mode}'
-        return
-      fi
-      target=$(cat "$previous_mode_file" 2>/dev/null || printf '%s' rule)
-      case "$target" in
-        rule|global) ;;
-        *) target=rule ;;
-      esac
-      ;;
-    off)
-      if [ "$current" = direct ]; then
-        printf '%s\n' '{"ok":true,"active":false,"mode":"direct"}'
-        return
-      fi
-      case "$current" in
-        rule|global) ;;
-        *) current=rule ;;
-      esac
-      target=direct
-      ;;
-    *)
-      printf '%s\n' '{"ok":false,"error":"State must be on or off"}'
-      return 2
-      ;;
+  case "${1:-}" in
+    on|off) local_control "$1" ;;
+    *) printf '%s\n' '{"ok":false,"error":"State must be on or off"}'; return 2 ;;
   esac
+}
 
-  payload=$(jq -n --arg mode "$target" '{mode:$mode}')
-  curl -fsS --max-time 5 -X PATCH -H 'Content-Type: application/json' \
-    --data "$payload" "$api/configs" >/dev/null
-  if [ "$requested" = off ]; then
-    mkdir -p "$state_dir"
-    printf '%s\n' "$current" > "$previous_mode_file"
-    printf '%s\n' '{"ok":true,"active":false,"mode":"direct"}'
+local_control() {
+  # Persist the intent in the real startup config before applying it. This
+  # restricted, root-owned helper can also start a stopped controller.
+  if response=$(timeout 45s pkexec --disable-internal-agent /usr/local/libexec/mihomo-vpn-control "$1" 2>/dev/null); then
+    printf '%s\n' "$response"
+    printf '%s' "$response" | jq -e '.ok == true' >/dev/null
   else
-    jq -n --arg mode "$target" '{ok:true, active:true, mode:$mode}'
+    if printf '%s' "$response" | jq -e 'type == "object" and (.error | type == "string")' >/dev/null 2>&1; then
+      printf '%s\n' "$response"
+    else
+      printf '%s\n' '{"ok":false,"error":"Could not control Mihomo locally. Check mihomo-vpn-control and administrator authorization."}'
+    fi
+    return 1
   fi
 }
 
@@ -214,8 +208,7 @@ groups() {
 }
 
 restart() {
-  curl -fsS --max-time 5 -X POST "$api/restart" >/dev/null
-  printf '%s\n' '{"ok":true}'
+  local_control restart
 }
 
 action=${1:-status}
@@ -224,8 +217,11 @@ if [ "$#" -gt 0 ]; then
 fi
 
 case $action in
+  subscription-status) subscription_status ;;
+  refresh-subscription) refresh_subscription ;;
   status) status "$@" ;;
   set-vpn) set_vpn "${1:-}" ;;
+  ensure-running) local_control ensure ;;
   select) select_proxy "${1:-}" "${2:-}" ;;
   delay) delay "${1:-}" ;;
   ping-all) ping_all "$@" ;;

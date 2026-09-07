@@ -1,0 +1,10 @@
+{
+  "subscription_url": "https://sub.capybara.support/YOUR_SUBSCRIPTION_TOKEN",
+  "user_agent": "FlClash X/v0.4.2 core/v1.19.29 Platform/linux",
+  "listen": "127.0.0.1:9095",
+  "state_dir": "/home/USER/.local/state/capybara-updater",
+  "identity_file": "/home/USER/.config/capybara-updater/device.json",
+  "mihomo_binary": "/usr/bin/mihomo",
+  "controller": "http://127.0.0.1:9090",
+  "provider": "capybara"
+}

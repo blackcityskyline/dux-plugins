@@ -14,7 +14,7 @@ while [ "$#" -gt 0 ]; do
             payload=$2
             shift 2
             ;;
-        --max-time|-H|--data-urlencode)
+        --max-time|--noproxy|-H|--data-urlencode)
             shift 2
             ;;
         -* )
@@ -28,6 +28,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$method:$url" in
+    GET:*/status)
+        printf '%s\n' '{"phase":"error","code":"device_limit","error":"Достигнут лимит устройств Capybara."}'
+        ;;
+    POST:*/refresh)
+        printf '%s\n' '{"phase":"error","code":"device_limit","error":"Достигнут лимит устройств Capybara."}'
+        ;;
     GET:*/configs)
         mode=$(cat "$MIHOMO_TEST_MODE_FILE")
         jq -n --arg mode "$mode" '{mode:$mode}'

@@ -5,6 +5,7 @@ import qs.Common
 import qs.Services
 import qs.Widgets
 import qs.Modules.Plugins
+import "UiText.js" as UiText
 
 PluginComponent {
     id: root
@@ -12,8 +13,17 @@ PluginComponent {
     property bool active: false
     property bool available: false
     property bool toggling: false
+    property bool startupHandled: false
     property bool pinging: false
-    property bool restarting: false
+    property string serviceError: ""
+    readonly property string controlError: serviceError || (!available ? "Mihomo is unavailable. Use the VPN switch to start the service." : "")
+    property bool updatingSubscription: false
+    property var subscriptionStatus: null
+    readonly property string subscriptionError: UiText.subscriptionError(subscriptionStatus)
+    readonly property bool subscriptionBusy: updatingSubscription || (subscriptionStatus && subscriptionStatus.phase === "updating")
+    readonly property string visibleSubscriptionError: subscriptionBusy ? "" : subscriptionError
+    readonly property string indicatorError: visibleSubscriptionError || controlError
+    readonly property string subscriptionTooltip: subscriptionBusy ? "Updating subscription…" : (subscriptionError ? "Retry subscription update" : "Update subscription")
     property var groupStates: []
     property var displayedGroups: []
     property var expandedGroups: ({})
@@ -40,22 +50,18 @@ PluginComponent {
             return "OFF";
         if (groupStates.length > 0) {
             const first = groupStates[0];
-            return first.shownCurrent || first.current || first.name || "ON";
+            return UiText.displayName(first.shownCurrent || first.current || first.name || "ON");
         }
         return "ON";
     }
-    readonly property int collapsedGroupsHeight: displayedGroups.length > 0
-        ? displayedGroups.length * groupBaseHeight + Math.max(0, displayedGroups.length - 1) * Theme.spacingS
-        : 0
+    readonly property int collapsedGroupsHeight: displayedGroups.length > 0 ? displayedGroups.length * groupBaseHeight + Math.max(0, displayedGroups.length - 1) * Theme.spacingS : 0
     readonly property int expandedHeight: {
         let height = 0;
         for (let i = 0; i < displayedGroups.length; i++)
             height += groupExpandedHeight(displayedGroups[i]);
         return height;
     }
-    readonly property int groupsContentHeight: displayedGroups.length > 0
-        ? collapsedGroupsHeight + expandedHeight
-        : emptyStateHeight
+    readonly property int groupsContentHeight: displayedGroups.length > 0 ? collapsedGroupsHeight + expandedHeight : emptyStateHeight
     readonly property int maximumGroupsViewportHeight: {
         const screenHeight = parentScreen && parentScreen.height > 0 ? parentScreen.height : 1080;
         const barReserve = Math.max(barThickness + barSpacing, Theme.barHeight + Theme.spacingS);
@@ -75,7 +81,7 @@ PluginComponent {
 
     function showInfo(title, message) {
         if (typeof ToastService !== "undefined")
-            ToastService.showInfo(title, message)
+            ToastService.showInfo(title, message);
     }
 
     function sameStringArray(left, right) {
@@ -108,6 +114,7 @@ PluginComponent {
     }
 
     function refresh() {
+        refreshSubscriptionStatus();
         const requestedGroups = configuredGroups.slice();
         const requestKey = JSON.stringify(requestedGroups);
         const generation = ++refreshGeneration;
@@ -115,10 +122,7 @@ PluginComponent {
             if (generation !== refreshGeneration || requestKey !== JSON.stringify(configuredGroups))
                 return;
             if (exitCode !== 0) {
-                available = false;
-                active = false;
-                applyGroupStates([]);
-                applyStats([]);
+                markControllerUnavailable();
                 return;
             }
             try {
@@ -128,40 +132,111 @@ PluginComponent {
                 applyGroupStates(data.groups);
                 applyStats(data.stats);
             } catch (error) {
-                available = false;
-                active = false;
-                applyGroupStates([]);
-                applyStats([]);
+                markControllerUnavailable();
             }
         }, 0, 5000);
     }
 
-    function toggleVpn() {
-        if (!available || toggling)
+    function markControllerUnavailable() {
+        available = false;
+        // A stopped or unreachable controller cannot provide VPN routing.
+        // Do not leave a stale enabled indicator in the bar.
+        active = false;
+    }
+
+    function applyControlResult(output, exitCode, successMessage) {
+        let result = null;
+        try {
+            result = JSON.parse(output);
+        } catch (error) {}
+        if (exitCode === 0 && result && result.ok === true) {
+            serviceError = "";
+            active = result.active === true;
+            available = result.available === true;
+            showInfo("Mihomo VPN", successMessage);
+        } else {
+            serviceError = UiText.englishError(result && result.error, "Could not control Mihomo. Check the local controller.");
+            if (typeof ToastService !== "undefined")
+                ToastService.showError("Mihomo VPN", serviceError);
+        }
+    }
+
+    function applySubscriptionStatus(data) {
+        if (data && typeof data.phase === "string")
+            subscriptionStatus = data;
+        else
+            subscriptionStatus = {
+                phase: "error",
+                error: "Could not read the subscription update status."
+            };
+    }
+
+    function refreshSubscriptionStatus() {
+        Proc.runCommand("mihomoVpn.subscriptionStatus", [helper, "subscription-status"], (output, exitCode) => {
+            try {
+                applySubscriptionStatus(JSON.parse(output));
+            } catch (error) {
+                applySubscriptionStatus(null);
+            }
+        }, 0, 5000);
+    }
+
+    function updateSubscription() {
+        if (subscriptionBusy)
             return;
-        const requestedState = active ? "off" : "on";
+        updatingSubscription = true;
+        Proc.runCommand("mihomoVpn.updateSubscription", [helper, "refresh-subscription"], (output, exitCode) => {
+            updatingSubscription = false;
+            try {
+                applySubscriptionStatus(JSON.parse(output));
+            } catch (error) {
+                applySubscriptionStatus({
+                    phase: "error",
+                    error: "Subscription update failed. Check the updater service."
+                });
+            }
+            if (exitCode !== 0 && !subscriptionError)
+                applySubscriptionStatus({
+                    phase: "error",
+                    error: "Subscription update failed. Please try again."
+                });
+            if (subscriptionError && typeof ToastService !== "undefined")
+                ToastService.showError("Capybara subscription update failed", subscriptionError);
+            else
+                showInfo("Capybara", "Subscription updated successfully");
+            refresh();
+        }, 0, 70000);
+    }
+
+    function toggleVpn() {
+        setVpnEnabled(!active);
+    }
+
+    function applyStartupPreference() {
+        if (startupHandled)
+            return;
+        startupHandled = true;
+        if (pluginData.enableVpnOnStartup === true)
+            setVpnEnabled(true);
+    }
+
+    function setVpnEnabled(enabled) {
+        if (toggling)
+            return;
+        const requestedState = enabled ? "on" : "off";
         toggling = true;
         Proc.runCommand("mihomoVpn.setVpn", [helper, "set-vpn", requestedState], (output, exitCode) => {
             toggling = false;
-            if (exitCode === 0) {
-                try {
-                    const result = JSON.parse(output);
-                    active = result.active === true;
-                } catch (error) {
-                }
-                showInfo("Mihomo VPN", active ? "VPN enabled" : "VPN disabled: direct traffic");
-            } else {
-                showInfo("Mihomo VPN", "Failed to change VPN mode");
-            }
+            applyControlResult(output, exitCode, requestedState === "on" ? "VPN enabled" : "VPN disabled: direct connection");
             refresh();
-        }, 0, 7000);
+        }, 0, 50000);
     }
 
     function select(group, target) {
         if (!target)
             return;
         Proc.runCommand("mihomoVpn.select." + group, [helper, "select", group, target], (output, exitCode) => {
-            showInfo("Mihomo VPN", exitCode === 0 ? (group + ": " + target) : ("Failed to switch " + group));
+            showInfo("Mihomo VPN", exitCode === 0 ? (UiText.displayName(group) + ": " + UiText.displayName(target)) : ("Failed to switch " + UiText.displayName(group)));
             refresh();
             // Mihomo applies the PUT synchronously in practice, but a short
             // second read keeps the status correct on a busy/reconnecting core.
@@ -191,18 +266,6 @@ PluginComponent {
         }, 0, 45000);
     }
 
-    function restartMihomo() {
-        if (restarting)
-            return;
-        restarting = true;
-        pingText = "Restarting Mihomo…";
-        Proc.runCommand("mihomoVpn.restart", [helper, "restart"], (output, exitCode) => {
-            restarting = false;
-            pingText = exitCode === 0 ? "Restart requested" : "Restart failed";
-            refreshTimer.restart();
-        }, 0, 15000);
-    }
-
     function toggleGroup(group) {
         const next = Object.assign({}, expandedGroups);
         if (next[group] === true)
@@ -217,7 +280,13 @@ PluginComponent {
             if (groupStates[i].name === name)
                 return groupStates[i];
         }
-        return { name: name, type: "", current: "", shownCurrent: "", choices: [] };
+        return {
+            name: name,
+            type: "",
+            current: "",
+            shownCurrent: "",
+            choices: []
+        };
     }
 
     function additionalChoices(group) {
@@ -247,14 +316,18 @@ PluginComponent {
             if (stats[i].name === name)
                 return stats[i];
         }
-        return { name: name, displayName: name, history: [] };
+        return {
+            name: name,
+            displayName: name,
+            history: []
+        };
     }
 
     function choiceLabel(name) {
         const stat = statFor(name);
         if (stat.displayName && stat.displayName !== name)
-            return name + " (" + stat.displayName + ")";
-        return name;
+            return UiText.displayName(name) + " (" + UiText.displayName(stat.displayName) + ")";
+        return UiText.displayName(name);
     }
 
     function delayColor(delay) {
@@ -271,6 +344,15 @@ PluginComponent {
     function historyColor(delay) {
         // A failed probe is a distinct state, not a slow red connection.
         return delay < 0 ? "#000000" : delayColor(delay);
+    }
+
+    Timer {
+        interval: 0
+        // PluginComponent loads saved settings when the service and ID arrive.
+        // Defer until that initialization has completed; never retry on polls
+        // or settings changes after the startup decision has been made.
+        running: root.pluginService !== null && root.pluginId !== "" && !root.startupHandled
+        onTriggered: root.applyStartupPreference()
     }
 
     Timer {
@@ -293,8 +375,8 @@ PluginComponent {
         Row {
             spacing: Theme.spacingXS
             DankIcon {
-                name: root.active ? "shield" : "shield_off"
-                color: root.active ? Theme.primary : Theme.error
+                name: root.indicatorError ? "error" : (root.active ? "shield" : "shield_off")
+                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.error)
                 size: Theme.iconSize - 6
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -311,8 +393,8 @@ PluginComponent {
         Column {
             spacing: Theme.spacingXS
             DankIcon {
-                name: root.active ? "shield" : "shield_off"
-                color: root.active ? Theme.primary : Theme.error
+                name: root.indicatorError ? "error" : (root.active ? "shield" : "shield_off")
+                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.error)
                 size: Theme.iconSize - 6
                 anchors.horizontalCenter: parent.horizontalCenter
             }
@@ -365,7 +447,7 @@ PluginComponent {
                         radius: height / 2
                         color: root.active ? Theme.withAlpha(Theme.primary, 0.28) : Theme.surfaceContainerHigh
                         border.width: 1
-                        border.color: root.active ? Theme.primary : Theme.outlineVariant
+                        border.color: root.controlError ? Theme.error : (root.active ? Theme.primary : Theme.outlineVariant)
                         opacity: root.toggling ? 0.65 : 1
 
                         Rectangle {
@@ -376,25 +458,54 @@ PluginComponent {
                             anchors.verticalCenter: parent.verticalCenter
                             color: root.active ? Theme.primary : Theme.surfaceVariantText
                             Behavior on x {
-                                NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                                NumberAnimation {
+                                    duration: 140
+                                    easing.type: Easing.OutCubic
+                                }
                             }
                         }
                         MouseArea {
                             id: vpnSwitchArea
+                            objectName: "vpnModeToggle"
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            enabled: root.available && !root.toggling
+                            enabled: !root.toggling
                             onClicked: root.toggleVpn()
                         }
                         ToolTip.visible: vpnSwitchArea.containsMouse
-                        ToolTip.text: !root.available
-                            ? "Mihomo API is unavailable"
-                            : (root.active ? "Disable VPN and route directly" : "Enable VPN")
+                        ToolTip.text: !root.available ? "Start Mihomo and apply the selected mode" : (root.active ? "Disable VPN and route directly" : "Enable VPN")
                     }
-                    Item { width: Theme.spacingS; height: 1 }
+                    Item {
+                        width: Theme.spacingS
+                        height: 1
+                    }
                     Rectangle {
-                        width: 32; height: 32; radius: Theme.cornerRadius
+                        objectName: "subscriptionUpdateButton"
+                        width: 32
+                        height: 32
+                        radius: Theme.cornerRadius
+                        color: subscriptionArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
+                        DankIcon {
+                            anchors.centerIn: parent
+                            name: root.subscriptionBusy ? "hourglass_top" : "cloud_download"
+                            size: 18
+                            color: root.visibleSubscriptionError ? Theme.error : Theme.primary
+                        }
+                        MouseArea {
+                            id: subscriptionArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: !root.subscriptionBusy
+                            onClicked: root.updateSubscription()
+                        }
+                        ToolTip.visible: subscriptionArea.containsMouse
+                        ToolTip.text: root.subscriptionTooltip
+                    }
+                    Rectangle {
+                        width: 32
+                        height: 32
+                        radius: Theme.cornerRadius
                         color: pingArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
                         DankIcon {
                             id: pingIcon
@@ -415,41 +526,33 @@ PluginComponent {
                                 }
                             }
                         }
-                        MouseArea { id: pingArea; anchors.fill: parent; hoverEnabled: true; enabled: !root.pinging; onClicked: root.pingAll() }
+                        MouseArea {
+                            id: pingArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: !root.pinging
+                            onClicked: root.pingAll()
+                        }
                         ToolTip.visible: pingArea.containsMouse
                         ToolTip.text: root.pinging ? "Checking all nodes…" : "Check all nodes"
                     }
                     Rectangle {
-                        width: 32; height: 32; radius: Theme.cornerRadius
-                        color: restartArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-                        DankIcon {
-                            id: restartIcon
-                            anchors.centerIn: parent
-                            name: "restart_alt"
-                            size: 18
-                            color: root.restarting ? Theme.primary : Theme.surfaceText
-                            smoothTransform: root.restarting
-                            RotationAnimator on rotation {
-                                from: 0
-                                to: 360
-                                duration: 1000
-                                loops: Animation.Infinite
-                                running: root.restarting
-                                onRunningChanged: {
-                                    if (!running)
-                                        restartIcon.rotation = 0;
-                                }
-                            }
-                        }
-                        MouseArea { id: restartArea; anchors.fill: parent; hoverEnabled: true; enabled: !root.restarting; onClicked: root.restartMihomo() }
-                        ToolTip.visible: restartArea.containsMouse
-                        ToolTip.text: root.restarting ? "Restarting Mihomo…" : "Restart Mihomo"
-                    }
-                    Rectangle {
-                        width: 32; height: 32; radius: Theme.cornerRadius
+                        width: 32
+                        height: 32
+                        radius: Theme.cornerRadius
                         color: dashboardArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-                        DankIcon { anchors.centerIn: parent; name: "open_in_new"; size: 17; color: Theme.surfaceText }
-                        MouseArea { id: dashboardArea; anchors.fill: parent; hoverEnabled: true; onClicked: Qt.openUrlExternally(root.dashboardUrl) }
+                        DankIcon {
+                            anchors.centerIn: parent
+                            name: "open_in_new"
+                            size: 17
+                            color: Theme.surfaceText
+                        }
+                        MouseArea {
+                            id: dashboardArea
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onClicked: Qt.openUrlExternally(root.dashboardUrl)
+                        }
                         ToolTip.visible: dashboardArea.containsMouse
                         ToolTip.text: "Open MetaCubeXD"
                     }
@@ -484,7 +587,7 @@ PluginComponent {
                         width: parent.width
                         height: visible ? root.emptyStateHeight : 0
                         visible: root.displayedGroups.length === 0
-                        text: "Choose groups in the plugin settings"
+                        text: root.available ? "Choose groups in the widget settings" : "Groups will appear once Mihomo starts"
                         color: Theme.surfaceVariantText
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
@@ -527,7 +630,7 @@ PluginComponent {
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                                 StyledText {
-                                    text: groupCard.groupName
+                                    text: UiText.displayName(groupCard.groupName)
                                     color: Theme.surfaceText
                                     anchors.left: groupIcon.right
                                     anchors.leftMargin: Theme.spacingS
@@ -556,7 +659,13 @@ PluginComponent {
                                 }
                             }
 
-                            Rectangle { y: 38; width: parent.width; height: 1; color: Theme.outlineVariant; opacity: 0.55 }
+                            Rectangle {
+                                y: 38
+                                width: parent.width
+                                height: 1
+                                color: Theme.outlineVariant
+                                opacity: 0.55
+                            }
 
                             Rectangle {
                                 id: currentRow
@@ -576,7 +685,13 @@ PluginComponent {
                                     spacing: 2
                                     Repeater {
                                         model: (currentRow.stat.history || []).slice(-8)
-                                        delegate: Rectangle { width: 3; height: Math.max(3, Math.min(14, Math.round((modelData.delay < 0 ? 700 : modelData.delay) / 45))); anchors.bottom: parent.bottom; radius: 1; color: root.historyColor(modelData.delay) }
+                                        delegate: Rectangle {
+                                            width: 3
+                                            height: Math.max(3, Math.min(14, Math.round((modelData.delay < 0 ? 700 : modelData.delay) / 45)))
+                                            anchors.bottom: parent.bottom
+                                            radius: 1
+                                            color: root.historyColor(modelData.delay)
+                                        }
                                     }
                                 }
                                 StyledText {
@@ -600,7 +715,14 @@ PluginComponent {
                                 }
                             }
 
-                            Rectangle { visible: groupCard.expanded && groupCard.listHeight > 0; y: root.groupBaseHeight; width: parent.width; height: root.listSeparatorHeight; color: Theme.outlineVariant; opacity: 0.55 }
+                            Rectangle {
+                                visible: groupCard.expanded && groupCard.listHeight > 0
+                                y: root.groupBaseHeight
+                                width: parent.width
+                                height: root.listSeparatorHeight
+                                color: Theme.outlineVariant
+                                opacity: 0.55
+                            }
 
                             DankListView {
                                 id: choicesList
@@ -622,15 +744,59 @@ PluginComponent {
                                     height: root.choiceRowHeight
                                     color: choiceArea.containsMouse && groupCard.selectable ? Theme.surfaceContainerHighest : "transparent"
 
-                                    StyledText { anchors.left: parent.left; anchors.leftMargin: Theme.spacingM; anchors.right: choiceDelay.left; anchors.rightMargin: 6; anchors.verticalCenter: parent.verticalCenter; text: root.choiceLabel(choiceRow.choiceName); color: Theme.surfaceText; elide: Text.ElideRight }
-                                    StyledText { id: choiceDelay; anchors.right: choiceHistory.left; anchors.rightMargin: 5; anchors.verticalCenter: parent.verticalCenter; text: choiceRow.latest >= 0 ? choiceRow.latest + " ms" : "—"; color: root.delayColor(choiceRow.latest); font.pixelSize: Theme.fontSizeSmall }
-                                    Row { id: choiceHistory; anchors.right: parent.right; anchors.rightMargin: Theme.spacingM; anchors.verticalCenter: parent.verticalCenter; height: 18; spacing: 2
-                                        Repeater { model: (choiceRow.stat.history || []).slice(-8)
-                                            delegate: Rectangle { width: 3; height: Math.max(3, Math.min(15, Math.round((modelData.delay < 0 ? 700 : modelData.delay) / 45))); anchors.bottom: parent.bottom; radius: 1; color: root.historyColor(modelData.delay) }
+                                    StyledText {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: Theme.spacingM
+                                        anchors.right: choiceDelay.left
+                                        anchors.rightMargin: 6
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: root.choiceLabel(choiceRow.choiceName)
+                                        color: Theme.surfaceText
+                                        elide: Text.ElideRight
+                                    }
+                                    StyledText {
+                                        id: choiceDelay
+                                        anchors.right: choiceHistory.left
+                                        anchors.rightMargin: 5
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: choiceRow.latest >= 0 ? choiceRow.latest + " ms" : "—"
+                                        color: root.delayColor(choiceRow.latest)
+                                        font.pixelSize: Theme.fontSizeSmall
+                                    }
+                                    Row {
+                                        id: choiceHistory
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: Theme.spacingM
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        height: 18
+                                        spacing: 2
+                                        Repeater {
+                                            model: (choiceRow.stat.history || []).slice(-8)
+                                            delegate: Rectangle {
+                                                width: 3
+                                                height: Math.max(3, Math.min(15, Math.round((modelData.delay < 0 ? 700 : modelData.delay) / 45)))
+                                                anchors.bottom: parent.bottom
+                                                radius: 1
+                                                color: root.historyColor(modelData.delay)
+                                            }
                                         }
                                     }
-                                    Rectangle { visible: index < choicesList.count - 1; anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.outlineVariant; opacity: 0.45 }
-                                    MouseArea { id: choiceArea; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; enabled: groupCard.selectable; onClicked: root.select(groupCard.groupName, choiceRow.choiceName) }
+                                    Rectangle {
+                                        visible: index < choicesList.count - 1
+                                        anchors.bottom: parent.bottom
+                                        width: parent.width
+                                        height: 1
+                                        color: Theme.outlineVariant
+                                        opacity: 0.45
+                                    }
+                                    MouseArea {
+                                        id: choiceArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        enabled: groupCard.selectable
+                                        onClicked: root.select(groupCard.groupName, choiceRow.choiceName)
+                                    }
                                 }
                             }
                         }

@@ -1,10 +1,12 @@
 # Capybara updater
 
 Rust CLI and loopback-only HTTP adapter for the system Mihomo provider.
-The DMS widget's cloud-download button runs `POST /refresh`. When the system
-Mihomo HTTP provider is available, this uses its normal update API; while it is
-off, the downloaded and validated nodes are stored for later use.
-MetaCubeXD's ordinary provider update button uses the same adapter via Mihomo.
+The DMS widget and MetaCubeXD update providers through Mihomo's standard API.
+When this adapter is configured as an HTTP provider, Mihomo fetches its
+`GET /provider/capybara` endpoint, which downloads and validates fresh nodes.
+The widget has no direct dependency on this service. The standalone CLI and
+`POST /refresh` remain available; they can store nodes for later use while
+the Mihomo service is stopped.
 
 ## Device identity
 
@@ -23,8 +25,8 @@ existing device slots or bypass their limit.
 
 `status.json` records the latest attempt, persistent error code/message, and
 last successful update. Errors survive process and desktop restarts and remain
-recorded on disk, with a red DMS indicator until a retry (pending retries show
-progress instead of the previous failure). Status can
+recorded on disk. DMS reports failures of updates requested through its button
+using the HTTP result from Mihomo; it does not poll this adapter's status. Status can
 be read even while a download is running or Mihomo is off.
 
 HTTP 200 is insufficient: refusal headers, including
@@ -37,8 +39,9 @@ imported. Only a successful validation atomically replaces the private cache;
 the previous file is retained. The adapter returns HTTP 502 on upstream or
 validation failure, so Mihomo retains its own provider cache and its dashboard
 reports a failed update. It never serves a cached copy as a successful refresh.
-Native dashboard error detail depends on its UI; DMS notifications show the
-full safe, English reason without adding status cards or error tooltip overlays.
+Dashboard error detail depends on its UI. DMS notifications show the provider
+name and a safe HTTP/connection error; detailed reasons remain in this adapter's
+status, without adding status cards or error tooltip overlays to DMS.
 Tokens, UUIDs, raw response bodies and request URLs are
 excluded from status, logs and errors. TLS verification stays enabled.
 
@@ -70,6 +73,11 @@ Cross-origin browser requests and foreign Host headers are rejected.
 
 ## Local VPN control
 
+This is an optional legacy standalone tool, not a widget dependency. The
+widget now uses only the Mihomo API for ON/OFF and its startup preference;
+it never invokes this binary or Polkit, and its mode changes are runtime-only.
+An existing helper installation is not automatically removed or modified.
+
 `src/bin/mihomo-vpn-control.rs` is a separate restricted binary in this crate.
 Unlike the subscription updater, it accepts no configuration paths, URLs, or
 arbitrary commands. Its only actions are `on`, `off`, `ensure`, and `restart`.
@@ -80,7 +88,7 @@ Build with `cargo build --release --locked`, then run
 The installer deploys the root-owned helper and its narrow Polkit policy,
 enables mihomo.service and starts it without changing the configured mode.
 The supplied rule is for the active local user `korbash`; review it before
-installing on another machine. No password is needed for subsequent widget
+installing on another machine. No password is needed for subsequent helper
 actions in that session. Unrelated administrative commands remain protected.
 
 An explicit toggle validates and atomically saves `mode` in the actual system
@@ -89,19 +97,21 @@ config before applying it. The last enabled rule/global mode is remembered in
 `config.yaml.before-widget-control`. Configuration, routing and provider data
 other than `mode` remain unchanged. Concurrent control commands are locked.
 Validation failure leaves both the config and saved state unchanged. If the
-live service cannot confirm the saved mode, the widget shows an error rather
+live service cannot confirm the saved mode, the helper returns an error rather
 than reporting success.
 
 OFF means DIRECT while the core and local dashboard remain running. Repeated
 OFF calls preserve the previous enabled mode. NetworkManager's try-restart,
 resume hooks, normal systemd restarts and Mihomo's native process restart read
 the saved config and cannot turn a saved OFF into ON. Direct API/dashboard
-mode changes outside this helper are still runtime-only; use the widget or
-its CLI for persistent state. `ensure` starts the core without changing mode.
+mode changes outside this helper, including widget changes, are runtime-only;
+invoke this standalone helper for persistent state. `ensure` starts the core
+without changing mode.
 
-The legacy local launchers `mihomo-vpn-on`, `mihomo-direct-now` and
-`mihomo-restart` should delegate to the plugin bridge's `set-vpn on`,
-`set-vpn off` and `restart` actions rather than stopping the service for OFF.
+Legacy local launchers requiring persistent state or service startup must
+invoke this helper explicitly, not the plugin bridge. The bridge's `set-vpn`
+action now changes only the live API mode; its `restart` and `ensure-running`
+actions have been removed. OFF should use DIRECT rather than stop the service.
 
 ## Validation
 

@@ -5,23 +5,7 @@ set -eu
 api='http://127.0.0.1:9090'
 state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/mihomo-dms"
 history_file="$state_dir/delay-history.json"
-subscription_api='http://127.0.0.1:9095'
-
-subscription_status() {
-  curl --noproxy '*' -fsS --max-time 3 "$subscription_api/status" 2>/dev/null ||
-    printf '%s\n' '{"phase":"error","code":"unavailable","error":"The subscription updater is unavailable. Check capybara-updater.service."}'
-}
-
-refresh_subscription() {
-  if response=$(curl --noproxy '*' -sS --max-time 65 -X POST -H 'X-Capybara-Action: refresh' \
-      "$subscription_api/refresh" 2>/dev/null); then
-    printf '%s\n' "$response"
-    printf '%s' "$response" | jq -e '.phase == "success"' >/dev/null
-  else
-    printf '%s\n' '{"phase":"error","code":"unavailable","error":"Could not connect to the subscription updater."}'
-    return 1
-  fi
-}
+mode_file="$state_dir/previous-mode"
 
 encoded_name() {
   jq -rn --arg value "$1" '$value | @uri'
@@ -31,16 +15,59 @@ api_get() {
   curl --noproxy '*' -fsS --max-time 3 "$api$1"
 }
 
+read_mode() {
+  config=$(api_get /configs) || return 1
+  printf '%s' "$config" | jq -er '
+    .mode | ascii_downcase | select(. == "direct" or . == "rule" or . == "global")'
+}
+
+http_providers() {
+  provider_data=$(api_get /providers/proxies) || return 1
+  printf '%s' "$provider_data" | jq -ce '
+    if (.providers | type) != "object" then error("Invalid provider response")
+    else .providers | to_entries | map(select(.value.vehicleType == "HTTP") | .key) end'
+}
+
+update_provider() {
+  name=${1:?provider is required}
+  if ! providers=$(http_providers); then
+    printf '%s\n' '{"ok":false,"error":"Could not read HTTP providers from Mihomo."}'
+    return 1
+  fi
+  if ! printf '%s' "$providers" | jq -e --arg name "$name" 'index($name) != null' >/dev/null; then
+    printf '%s\n' '{"ok":false,"error":"The HTTP provider is no longer available."}'
+    return 2
+  fi
+  provider_path=$(encoded_name "$name")
+  # Discard upstream bodies: Mihomo errors can contain subscription URLs or
+  # credentials. Return only a safe HTTP status and fixed English messages.
+  if http_code=$(curl --noproxy '*' -sS --max-time 60 -o /dev/null -w '%{http_code}' \
+      -X PUT "$api/providers/proxies/$provider_path" 2>/dev/null); then
+    case "$http_code" in
+      2[0-9][0-9])
+        printf '%s\n' '{"ok":true}'
+        return
+        ;;
+    esac
+    jq -n --arg code "$http_code" '{ok:false, error:("Mihomo could not update this provider (HTTP " + $code + ").")}'
+  else
+    printf '%s\n' '{"ok":false,"error":"The provider update timed out or Mihomo could not be reached."}'
+  fi
+  return 1
+}
+
 groups_json() {
   printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(length > 0))'
 }
 
 status() {
   selected_groups=$(groups_json "$@")
-  mode=$(api_get /configs | jq -r '.mode // "rule"' | tr '[:upper:]' '[:lower:]')
+  mode=$(read_mode) || return 1
   proxies=$(api_get /proxies)
+  # Provider discovery is optional; it must not break node controls.
+  providers=$(http_providers 2>/dev/null || printf '%s' '[]')
   history=$(cat "$history_file" 2>/dev/null || printf '%s' '{}')
-  printf '%s' "$proxies" | jq --arg mode "$mode" --argjson history "$history" --argjson groups "$selected_groups" '
+  printf '%s' "$proxies" | jq --arg mode "$mode" --argjson providers "$providers" --argjson history "$history" --argjson groups "$selected_groups" '
     .proxies as $p |
     ($groups | map(select($p[.].type == "Selector"))) as $selectorGroups |
     def choices($group): $p[$group].all // [];
@@ -55,6 +82,7 @@ status() {
     {
       active: ($mode != "direct"),
       mode: $mode,
+      httpProviders: $providers,
       groups: [
         $selectorGroups[] as $group |
         ($p[$group].now // "") as $current |
@@ -76,23 +104,55 @@ status() {
 
 set_vpn() {
   case "${1:-}" in
-    on|off) local_control "$1" ;;
+    on|off) ;;
     *) printf '%s\n' '{"ok":false,"error":"State must be on or off"}'; return 2 ;;
   esac
+  if ! mode=$(read_mode 2>/dev/null); then
+    printf '%s\n' '{"ok":false,"available":false,"error":"Mihomo API is unavailable or returned an invalid mode."}'
+    return 1
+  fi
+  target=$mode
+  if [ "$1" = off ]; then
+    target=direct
+    if [ "$mode" != direct ]; then
+      # Remember only the last enabled mode, never DIRECT. This is user state,
+      # not Mihomo's system config, and repeated OFF must preserve it.
+      if ! save_mode "$mode"; then
+        printf '%s\n' '{"ok":false,"error":"Could not remember the previous VPN mode. No mode change was requested."}'
+        return 1
+      fi
+    fi
+  elif [ "$mode" = direct ]; then
+    target=$(cat "$mode_file" 2>/dev/null || true)
+    case "$target" in rule|global) ;; *) target=rule ;; esac
+  fi
+  if [ "$target" != "$mode" ]; then
+    payload=$(jq -nc --arg mode "$target" '{mode:$mode}')
+    # Never expose controller response bodies (which can contain secrets).
+    if ! curl --noproxy '*' -fsS --max-time 5 -o /dev/null -X PATCH \
+        -H 'Content-Type: application/json' --data "$payload" "$api/configs" 2>/dev/null; then
+      printf '%s\n' '{"ok":false,"error":"Could not change VPN mode through Mihomo. Refresh status and try again."}'
+      return 1
+    fi
+    if ! mode=$(read_mode 2>/dev/null); then
+      printf '%s\n' '{"ok":false,"available":false,"error":"Mihomo did not confirm the VPN mode. Its API is unavailable or returned an invalid mode."}'
+      return 1
+    fi
+    if [ "$mode" != "$target" ]; then
+      printf '%s\n' '{"ok":false,"error":"Mihomo did not confirm the requested VPN mode. Refresh status and try again."}'
+      return 1
+    fi
+  fi
+  jq -n --arg mode "$mode" '{ok:true, available:true, active:($mode != "direct"), mode:$mode}'
 }
 
-local_control() {
-  # Persist the intent in the real startup config before applying it. This
-  # restricted, root-owned helper can also start a stopped controller.
-  if response=$(timeout 45s pkexec --disable-internal-agent /usr/local/libexec/mihomo-vpn-control "$1" 2>/dev/null); then
-    printf '%s\n' "$response"
-    printf '%s' "$response" | jq -e '.ok == true' >/dev/null
+save_mode() {
+  mkdir -p "$state_dir" || return 1
+  mode_temp=$(mktemp "$state_dir/previous-mode.XXXXXX") || return 1
+  if printf '%s\n' "$1" > "$mode_temp" && mv -f "$mode_temp" "$mode_file"; then
+    return 0
   else
-    if printf '%s' "$response" | jq -e 'type == "object" and (.error | type == "string")' >/dev/null 2>&1; then
-      printf '%s\n' "$response"
-    else
-      printf '%s\n' '{"ok":false,"error":"Could not control Mihomo locally. Check mihomo-vpn-control and administrator authorization."}'
-    fi
+    rm -f "$mode_temp"
     return 1
   fi
 }
@@ -109,7 +169,7 @@ select_proxy() {
 
   group_path=$(encoded_name "$group")
   payload=$(jq -n --arg name "$target" '{name: $name}')
-  curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' \
+  curl --noproxy '*' -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' \
     --data "$payload" "$api/proxies/$group_path" >/dev/null
   jq -n --arg group "$group" --arg target "$target" '{ok:true, group:$group, target:$target}'
 }
@@ -117,7 +177,7 @@ select_proxy() {
 delay() {
   group=${1:?group is required}
   group_path=$(encoded_name "$group")
-  response=$(curl -fsS --max-time 8 -G \
+  response=$(curl --noproxy '*' -fsS --max-time 8 -G \
     --data-urlencode 'url=https://www.gstatic.com/generate_204' \
     --data-urlencode 'timeout=5000' \
     "$api/proxies/$group_path/delay" 2>/dev/null || true)
@@ -136,7 +196,7 @@ probe_one() {
   else
     endpoint="$api/proxies/$name_path/delay"
   fi
-  response=$(curl -fsS --max-time 8 -G \
+  response=$(curl --noproxy '*' -fsS --max-time 8 -G \
     --data-urlencode 'url=https://www.gstatic.com/generate_204' \
     --data-urlencode 'timeout=5000' \
     "$endpoint" 2>/dev/null || true)
@@ -207,25 +267,18 @@ groups() {
     map({name: .key, type: .value.type})'
 }
 
-restart() {
-  local_control restart
-}
-
 action=${1:-status}
 if [ "$#" -gt 0 ]; then
   shift
 fi
 
 case $action in
-  subscription-status) subscription_status ;;
-  refresh-subscription) refresh_subscription ;;
+  update-provider) update_provider "${1:-}" ;;
   status) status "$@" ;;
   set-vpn) set_vpn "${1:-}" ;;
-  ensure-running) local_control ensure ;;
   select) select_proxy "${1:-}" "${2:-}" ;;
   delay) delay "${1:-}" ;;
   ping-all) ping_all "$@" ;;
   groups) groups ;;
-  restart) restart ;;
   *) printf '%s\n' '{"ok":false,"error":"Unknown action"}'; exit 2 ;;
 esac

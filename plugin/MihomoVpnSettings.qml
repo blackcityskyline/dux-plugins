@@ -141,7 +141,7 @@ PluginSettings {
     ToggleSetting {
         settingKey: "enableVpnOnStartup"
         label: "Enable VPN on startup"
-        description: "Turn VPN on when this widget loads, including after a shell restart or plugin reload."
+        description: "Enable VPN once after this widget loads, when the Mihomo API is available. Does not start the Mihomo service."
         defaultValue: false
     }
 

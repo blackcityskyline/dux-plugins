@@ -79,6 +79,10 @@ ShellRoot {
         startupWidget.applyStartupPreference();
         assertTrue(startupWidget.enableRequests.length === 0, "changing settings triggered startup again");
         startupWidget.startupHandled = false;
+        startupWidget.applyStartupPreference();
+        assertTrue(!startupWidget.startupHandled && startupWidget.enableRequests.length === 0,
+            "startup did not wait for the Mihomo API");
+        startupWidget.available = true;
         startupWidget.active = true;
         startupWidget.applyStartupPreference();
         assertTrue(JSON.stringify(startupWidget.enableRequests) === '[true]',
@@ -86,6 +90,11 @@ ShellRoot {
         startupWidget.active = false;
         startupWidget.applyStartupPreference();
         assertTrue(startupWidget.enableRequests.length === 1, "startup undid a later manual OFF");
+        startupWidget.startupHandled = false;
+        startupWidget.toggleVpn();
+        startupWidget.applyStartupPreference();
+        assertTrue(startupWidget.startupHandled && startupWidget.enableRequests.length === 2,
+            "manual toggle did not consume the pending startup preference");
         startupWidget.destroy();
     }
 
@@ -151,15 +160,91 @@ ShellRoot {
                     + (widget.popoutHeaderHeight + widget.groupsViewportHeight));
             assertTrue(widget.popoutHeight === popup.implicitHeight + Theme.spacingS * 2,
                 "PluginPopout host height does not match content height");
-            console.warn("MIHOMO_SELFTEST_PASS bundled-helper independent-expansion bounded-heights interactive-scroll stable-scroll exact-host-height");
+            widget.available = true;
+            widget.applyHttpProviders(["Alpha", "Россия / beta?"]);
+            widget.updateSubscription();
+            assertTrue(widget.updatingSubscription, "HTTP provider update did not start");
+            // A second click while busy must not create a second batch.
+            widget.updateSubscription();
+            providerUpdateTestTimer.start();
         } catch (error) {
             console.error("MIHOMO_SELFTEST_FAIL", error.message);
+            cleanUp();
         }
-        cleanUp();
+    }
+
+    Timer {
+        id: providerUpdateTestTimer
+        property bool retrying: false
+        interval: 30
+        repeat: true
+        onTriggered: {
+            if (shell.widget.updatingSubscription)
+                return;
+            try {
+                if (!retrying) {
+                    shell.assertTrue(shell.widget.subscriptionFailures.length === 1
+                        && shell.widget.subscriptionFailures[0].name === "Alpha",
+                        "partial HTTP failure was lost or the next provider failed unexpectedly");
+                    retrying = true;
+                    shell.widget.available = true;
+                    shell.widget.applyHttpProviders(["Alpha", "Россия / beta?"]);
+                    shell.widget.updateSubscription();
+                    return;
+                }
+                shell.assertTrue(shell.widget.subscriptionError === "", "successful HTTP retry left a stale error");
+                stop();
+                shell.widget.setVpnEnabled(false);
+                shell.assertTrue(shell.widget.toggling, "API OFF did not start");
+                // Busy control must reject a second click.
+                shell.widget.setVpnEnabled(true);
+                vpnControlTestTimer.start();
+                return;
+            } catch (error) {
+                console.error("MIHOMO_SELFTEST_FAIL", error.message);
+            }
+            stop();
+            shell.cleanUp();
+        }
+    }
+
+    Timer {
+        id: vpnControlTestTimer
+        property bool enabling: false
+        interval: 30
+        repeat: true
+        onTriggered: {
+            if (shell.widget.toggling)
+                return;
+            try {
+                shell.assertTrue(shell.widget.available && shell.widget.serviceError === "",
+                    "API mode control failed");
+                shell.assertTrue(shell.widget.active === enabling, "API mode result was not applied");
+                if (!enabling) {
+                    enabling = true;
+                    shell.widget.setVpnEnabled(true);
+                    return;
+                }
+                console.warn("MIHOMO_SELFTEST_PASS bundled-bridge independent-expansion bounded-heights interactive-scroll stable-scroll exact-host-height http-provider-batch partial-failure retry api-vpn-off-on");
+            } catch (error) {
+                console.error("MIHOMO_SELFTEST_FAIL", error.message);
+            }
+            stop();
+            shell.cleanUp();
+        }
     }
 
     function finishGeometryTest() {
         try {
+            for (const name of ["currentHistory", "choiceHistory"]) {
+                const row = findObject(popup, name);
+                assertTrue(row !== null, name + " was not instantiated");
+                const bars = Array.from(row.children).filter(child => child.objectName === "latencyHistoryBar");
+                assertTrue(bars.length === 4, name + " must show exactly four recent samples");
+                assertTrue(bars.every(bar => bar.width === 6), name + " bars must be 6 px wide");
+                assertTrue(Qt.colorEqual(bars[3].color, Theme.surfaceVariantText),
+                    name + " failed sample does not use the visible theme color");
+            }
             longList = findLongList(popup);
             assertTrue(longList !== null, "long DankListView was not instantiated");
             assertTrue(longList.interactive === true, "long DankListView is not interactive");
@@ -183,16 +268,23 @@ ShellRoot {
             assertTrue(typeof widget.restartMihomo === "undefined", "restart UI action was not removed");
             assertTrue(UiText.displayName("Зарубежный VPN") === "International VPN", "group label is not English");
             assertTrue(widget.choiceLabel("🇩🇪 Германия") === "🇩🇪 Germany", "server label is not English");
-            assertTrue(UiText.englishError("Не удалось запустить Mihomo. Проверьте журнал mihomo.service.", "fallback")
-                === "Could not start Mihomo. Check the mihomo.service journal.", "legacy helper error is not translated");
-            assertTrue(UiText.subscriptionError({code: "http_error", error: "Сервер подписки вернул HTTP 502."})
-                === "The subscription server returned HTTP 502. Please try again later.", "HTTP error lost its status or language");
+            assertTrue(UiText.englishError("Ошибка", "fallback") === "fallback", "non-English error is not replaced");
+            assertTrue(Qt.colorEqual(widget.delayColor(800), Theme.success), "fast latency ignores success theme color");
+            assertTrue(Qt.colorEqual(widget.delayColor(801), Theme.warning), "medium latency ignores warning theme color");
+            assertTrue(Qt.colorEqual(widget.delayColor(1500), Theme.warning), "medium latency threshold changed");
+            assertTrue(Qt.colorEqual(widget.delayColor(1501), Theme.error), "slow latency ignores error theme color");
+            assertTrue(Qt.colorEqual(widget.historyColor(-1), Theme.surfaceVariantText), "failed history is not theme-aware");
+            const history = [10, 20, 100, 900, 1600, -1].map(delay => ({delay: delay}));
+            assertTrue(JSON.stringify(widget.visibleHistory({history: history})) === JSON.stringify(history.slice(-4)),
+                "history does not preserve the latest four samples in chronological order");
+            assertTrue(widget.visibleHistory({}).length === 0, "missing history produced samples");
+            assertTrue(widget.visibleHistory({history: history.slice(0, 2)}).length === 2, "short history was padded");
             widget.groupStates = [
                 {name: "Foreign", type: "Selector", current: "f0", shownCurrent: "f0", choices: choices("f", 30)},
                 {name: "Russia", type: "Selector", current: "r0", shownCurrent: "r0", choices: choices("r", 3)}
             ];
             widget.displayedGroups = ["Foreign", "Russia"];
-            widget.stats = [];
+            widget.stats = choices("f", 30).concat(choices("r", 3)).map(name => ({name: name, history: history}));
             widget.expandedGroups = ({});
 
             widget.toggleGroup("Foreign");
@@ -234,9 +326,6 @@ ShellRoot {
             assertTrue(widget.displayedGroups === names, "current-node refresh recreated group delegates");
             assertTrue(widget.groupStates !== states, "changed current node was not applied");
 
-            widget.applySubscriptionStatus({phase: "error", code: "device_limit", error: "Достигнут лимит устройств Capybara."});
-            assertTrue(widget.subscriptionError.indexOf("device limit") >= 0 && !/[А-Яа-яЁё]/.test(widget.subscriptionError),
-                "persisted subscription failure is not displayed in English");
             widget.active = true;
             widget.markControllerUnavailable();
             assertTrue(widget.active === false, "controller outage left a stale enabled switch position");
@@ -246,39 +335,54 @@ ShellRoot {
             widget.applyControlResult('{"ok":true,"active":false,"available":true}', 0, "test");
             assertTrue(widget.active === false && widget.available === true && widget.serviceError === "",
                 "confirmed control result was not applied");
-            widget.active = true;
-            widget.markControllerUnavailable();
-            assertTrue(widget.subscriptionError.length > 0, "subscription error disappeared with VPN off");
-            widget.applyGroupStates(JSON.parse(JSON.stringify(widget.groupStates)));
-            assertTrue(widget.subscriptionError.length > 0, "API refresh cleared subscription error");
             popup = widget.popoutContent.createObject(null, {width: 400});
             assertTrue(popup !== null, "popout content could not be created");
             const notice = findObject(popup, "subscriptionStatusCard");
             assertTrue(notice === null, "subscription error added an unwanted inline card");
-            assertTrue(widget.subscriptionTooltip === "Retry subscription update" && widget.indicatorError.length > 0,
-                "error tooltip must remain a short action label with a compact indicator");
-            assertTrue(widget.groupsContentHeight === expectedHeight, "error status expanded the widget");
-            assertTrue(findObject(popup, "subscriptionUpdateButton") !== null, "subscription update button missing");
-            widget.applySubscriptionStatus({phase: "success", error: null, node_count: 10, last_success_at: 123});
-            assertTrue(widget.subscriptionError === "", "successful retry did not clear subscription error");
-            assertTrue(widget.groupsContentHeight === expectedHeight, "successful update changed widget height");
+            const subscriptionButton = findObject(popup, "subscriptionUpdateButton");
+            assertTrue(subscriptionButton !== null, "subscription update button missing");
             widget.available = true;
-            widget.applySubscriptionStatus({phase: "updating", code: "timeout", error: "Previous attempt timed out"});
-            assertTrue(widget.subscriptionBusy && widget.subscriptionTooltip === "Updating subscription…",
-                "compact update progress was lost");
+            widget.applyHttpProviders([]);
+            assertTrue(!subscriptionButton.visible && widget.indicatorError === "",
+                "stock install without HTTP providers shows a subscription button or false error");
+            widget.updateSubscription();
+            assertTrue(!widget.updatingSubscription, "empty provider list started an update");
+            widget.applyHttpProviders(["Alpha", "Россия", "Alpha"]);
+            assertTrue(subscriptionButton.visible && widget.httpProviders.length === 2,
+                "HTTP providers did not enable the button or were not deduplicated");
+            widget.applySubscriptionResults([
+                {name: "Alpha", ok: true},
+                {name: "Россия", ok: false, error: "Mihomo could not update this provider (HTTP 502)."}
+            ]);
+            assertTrue(widget.subscriptionError.indexOf("Russia:") === 0 && widget.subscriptionError.indexOf("HTTP 502") >= 0,
+                "partial failure lost its provider name, HTTP status or display translation");
+            assertTrue(widget.subscriptionTooltip === "Retry subscription updates" && widget.indicatorError.length > 0,
+                "failed update lost the compact indicator or short action tooltip");
+            widget.active = false;
+            widget.applyHttpProviders(["Alpha", "Россия"]);
+            assertTrue(widget.visibleSubscriptionError.length > 0, "DIRECT mode or polling cleared an actual update failure");
+            widget.updatingSubscription = true;
             assertTrue(widget.visibleSubscriptionError === "" && widget.indicatorError === "",
                 "previous subscription failure leaked into the current update indicator");
             assertTrue(widget.subscriptionError.length > 0, "retry destroyed the stored previous error");
             assertTrue(widget.groupsContentHeight === expectedHeight, "update progress expanded the widget");
-            widget.applySubscriptionStatus({phase: "idle", error: null});
+            widget.applySubscriptionResults([{name: "Alpha", ok: true}, {name: "Россия", ok: true}]);
+            widget.updatingSubscription = false;
+            assertTrue(widget.subscriptionError === "", "successful retry did not clear the error");
+            widget.applyHttpProviders([]);
+            widget.applySubscriptionResults([{name: "Россия", ok: false, error: "Late failed request"}]);
+            assertTrue(widget.subscriptionError === "" && !subscriptionButton.visible,
+                "late callback resurrected an error for a removed provider");
+            widget.applyHttpProviders(["Alpha"]);
             widget.markControllerUnavailable();
+            assertTrue(!subscriptionButton.visible, "offline controller left provider update available");
             assertTrue(widget.groupsContentHeight === expectedHeight, "idle status changed widget height");
             const vpnSwitch = findObject(popup, "vpnModeSwitch");
             assertTrue(vpnSwitch !== null, "VPN mode switch was not instantiated");
             assertTrue(vpnSwitch.width > 32 && vpnSwitch.radius === vpnSwitch.height / 2,
                 "VPN mode switch is not an elongated radio control");
-            assertTrue(findObject(popup, "vpnModeToggle").enabled === true,
-                "stopped controller disabled the VPN start button");
+            assertTrue(findObject(popup, "vpnModeToggle").enabled === false,
+                "unavailable controller left the API-only VPN switch enabled");
             assertTrue(findObject(popup, "mihomoServiceStatusCard") === null,
                 "controller outage added an unwanted inline card");
             assertTrue(widget.controlError.indexOf("unavailable") >= 0 && widget.indicatorError.length > 0,

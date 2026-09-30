@@ -1,26 +1,5 @@
 #!/bin/sh
-set -eu
-[ "$1" = --disable-internal-agent ]; shift
-[ "$1" = /usr/local/libexec/mihomo-vpn-control ]; shift
-if [ "${MIHOMO_TEST_CONTROL_FAIL:-0}" = 1 ]; then
-    printf '%s\n' '{"ok":false,"error":"Test control failure"}'
-    exit 1
-fi
-current=$(cat "$MIHOMO_TEST_MODE_FILE")
-case "$1" in
-    off)
-        if [ "$current" != direct ]; then
-            printf '%s\n' "$current" > "$MIHOMO_TEST_MODE_FILE.saved"
-        fi
-        current=direct
-        ;;
-    on)
-        if [ "$current" = direct ]; then
-            current=$(cat "$MIHOMO_TEST_MODE_FILE.saved" 2>/dev/null || printf rule)
-        fi
-        ;;
-    ensure|restart) ;;
-    *) exit 2 ;;
-esac
-printf '%s\n' "$current" > "$MIHOMO_TEST_MODE_FILE"
-jq -n --arg mode "$current" '{ok:true, available:true, active:($mode != "direct"), mode:$mode}'
+# Guard: an API-only widget must never request elevated privileges.
+printf '%s\n' 'Unexpected pkexec invocation' >&2
+touch "$MIHOMO_TEST_MODE_FILE.pkexec-called"
+exit 1

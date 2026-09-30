@@ -11,20 +11,22 @@ dashboard.
 
 ## Features
 
-- Refresh Capybara through the optional [Rust updater](updater/README.md), with
-  error notifications and a persistent red indicator, even with VPN off.
+- Update configured HTTP proxy providers through Mihomo's standard API.
+  The update button is hidden when no HTTP providers are available. Failures
+  from widget-initiated updates use notifications and a compact indicator.
 
 - Select any number of Mihomo `Selector` groups and drag enabled groups in
   settings to arrange their widget order. Disabled groups appear at the bottom.
 - Optionally enable VPN when the widget loads (including shell restarts and
   plugin reloads). `Enable VPN on startup` defaults to off and runs only once
-  per widget instance; manually turning VPN off is respected until the next load.
+  per widget instance after the API becomes available; manually turning VPN
+  off is respected until the next load. This does not start the Mihomo service.
 - Expand multiple groups at the same time.
 - Display the active node, recent latency history, and probe status.
 - Scroll long node lists while keeping the popout within the screen bounds.
 - Switch nodes and probe all visible groups through the local controller API.
-- Persist VPN ON/OFF across Wi-Fi, resume and service restarts using the local
-  [Rust controller](updater/README.md#local-vpn-control).
+- Switch VPN ON/OFF through Mihomo's API: OFF selects `direct`; ON restores
+  the previous `rule` or `global` mode (default: `rule`).
 - Open a configured MetaCubeXD dashboard directly from the widget.
 - Preserve expanded groups and scroll positions across periodic API refreshes.
 
@@ -51,20 +53,30 @@ occasionally be interpreted as an outside click and dismiss the popout.
   ```
 
 - `curl` and `jq` available on `PATH`.
-- `pkexec`, systemd, and the installed `mihomo-vpn-control` helper for durable
-  mode changes and starting/restarting the service.
 
 The external controller is built into Mihomo. This widget and MetaCubeXD are
 independent clients of that API: the widget connects directly to Mihomo, while
 MetaCubeXD provides the optional full dashboard.
 
-The VPN switch invokes the restricted local helper, which uses systemd and
-preserves the saved mode. It writes `mode` atomically to
-`/etc/mihomo/config.yaml` before applying it to the live API. OFF uses DIRECT;
-the service and widget remain available. If the service is stopped, the
-switch can start it. There is no restart button in the widget; the CLI restart
-action remains available. A temporary controller outage shows OFF and a compact
-error indicator until the controller confirms its current mode again.
+All Mihomo controls use its API; no privileged helper, `pkexec`, Polkit rule,
+or provider-specific updater is required by the plugin. The bundled
+`mihomo-dms` script is an unprivileged API bridge, not a system service controller.
+
+The VPN switch reads `GET /configs`, applies `PATCH /configs`, and confirms
+the resulting mode with another GET. OFF uses DIRECT, bypassing routing rules
+while the core and dashboard remain running. ON restores the last enabled
+mode, remembered in `$XDG_STATE_HOME/mihomo-dms/previous-mode` (default state
+directory: `~/.local/state`). Repeated OFF does not overwrite it; missing or
+invalid saved state defaults to `rule`. ON while already enabled preserves
+the current mode. The indicator reflects routing mode, not an end-to-end
+connectivity guarantee.
+
+These are runtime changes: the plugin does not write `/etc/mihomo/config.yaml`,
+start or restart the service, or preserve OFF across a Mihomo restart/config
+reload. Mihomo then uses its own configured mode. Start the core separately
+using your service manager. When the API is unavailable the switch is disabled,
+with OFF and a compact error indicator until status is available again.
+The obsolete bridge actions `restart` and `ensure-running` are no longer supported.
 Labels, tooltips and errors are displayed in English. Known Russian group and
 server names are translated only for display; API identifiers, selection and
 routing stay unchanged. No subscription or service-status cards are added to
@@ -74,6 +86,22 @@ tooltips are short action labels only. Previous subscription failures are not
 highlighted while a retry is running. Status changes do not change widget height.
 Latency probes ask Mihomo to fetch `https://www.gstatic.com/generate_204`
 through each selected node.
+
+### Subscription updates
+
+The widget discovers HTTP providers through `GET /providers/proxies` and
+updates each with `PUT /providers/proxies/{name}`. File and built-in providers
+are excluded. Updates run sequentially, continue after individual failures,
+and report partial failure instead of claiming that all providers succeeded.
+OFF/DIRECT does not prevent updates while the Mihomo controller is reachable.
+This updates provider node lists, not an entire downloaded Mihomo configuration.
+
+No provider-specific updater or subscription token is required by the widget.
+The optional [Capybara adapter](updater/README.md) can remain configured as an
+HTTP provider in Mihomo; the widget uses the same API for it as for any other
+HTTP provider and never contacts port 9095. Detailed adapter diagnostics stay
+in the adapter. The widget reports provider names and safe HTTP/connection
+errors without exposing upstream response bodies or subscription URLs.
 
 ### Optional dashboard
 
@@ -120,7 +148,7 @@ shared when switching between the published and local sources.
 
 Open the Mihomo VPN plugin settings in DMS. The settings page loads available
 `Selector` groups from the local Mihomo API. Select the groups that belong in
-the widget and use the arrow controls to arrange their display order.
+the widget and drag enabled groups to arrange their display order.
 
 Routing rules remain in `/etc/mihomo/config.yaml` and its configured rule
 provider files. For example, domain suffixes routed through the Russia proxy
@@ -135,7 +163,7 @@ Validate and apply routing changes with:
 
 ```sh
 sudo mihomo -t -d /etc/mihomo -f /etc/mihomo/config.yaml
-plugin/mihomo-dms restart
+sudo systemctl restart mihomo.service
 ```
 
 ## Development workflow
@@ -313,13 +341,14 @@ keeps the popout visible throughout the screenshot:
 
 ## Security model
 
-The bridge uses local APIs at `127.0.0.1:9090` (Mihomo) and `127.0.0.1:9095`
-(subscription adapter). Its administrative helper accepts only four fixed
-actions, has no arbitrary command/path options, and is installed root-owned.
-The Polkit rule permits only this executable for the active local `korbash`
-session, not arbitrary systemctl commands or the configurable updater binary.
-Subscription downloads and actual node reachability probes necessarily access
-the network; VPN state, persistence and service control do not use a cloud API.
+The bridge uses only the local Mihomo API at `127.0.0.1:9090` for routing mode,
+provider and proxy operations. It runs as the desktop user and writes only
+user-local state (the previous enabled mode and latency history). It never
+requests elevation or invokes service management. The optional legacy root
+controller under `updater/` is not used by the plugin; existing installations
+are left untouched. Subscription downloads and actual node reachability probes
+are performed by Mihomo and necessarily access the network. Keep the controller
+bound to loopback; this plugin currently expects an empty API secret.
 
 ## License
 

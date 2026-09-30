@@ -4,6 +4,7 @@ set -eu
 method=GET
 payload=
 url=
+output_file=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -X)
@@ -12,6 +13,14 @@ while [ "$#" -gt 0 ]; do
             ;;
         --data)
             payload=$2
+            shift 2
+            ;;
+        -o)
+            output_file=$2
+            shift 2
+            ;;
+        -w)
+            [ "$2" = '%{http_code}' ]
             shift 2
             ;;
         --max-time|--noproxy|-H|--data-urlencode)
@@ -27,19 +36,65 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+case "$url" in
+    http://127.0.0.1:9090/*) ;;
+    *) printf 'Unexpected API URL: %s\n' "$url" >&2; exit 2 ;;
+esac
+if [ -n "${MIHOMO_TEST_REQUEST_LOG:-}" ]; then
+    printf '%s %s\n' "$method" "$url" >> "$MIHOMO_TEST_REQUEST_LOG"
+fi
+
 case "$method:$url" in
-    GET:*/status)
-        printf '%s\n' '{"phase":"error","code":"device_limit","error":"Достигнут лимит устройств Capybara."}'
+    GET:*/providers/proxies)
+        case "${MIHOMO_TEST_PROVIDERS:-mixed}" in
+            mixed) printf '%s\n' '{"providers":{"Alpha":{"vehicleType":"HTTP"},"Россия / beta?":{"vehicleType":"HTTP"},"local":{"vehicleType":"File"},"default":{"vehicleType":"Compatible"}}}' ;;
+            none) printf '%s\n' '{"providers":{"local":{"vehicleType":"File"},"default":{"vehicleType":"Compatible"}}}' ;;
+            empty) printf '%s\n' '{"providers":{}}' ;;
+            malformed) printf '%s\n' '{"unexpected":true}' ;;
+            unavailable) exit 7 ;;
+        esac
         ;;
-    POST:*/refresh)
-        printf '%s\n' '{"phase":"error","code":"device_limit","error":"Достигнут лимит устройств Capybara."}'
+    PUT:*/providers/proxies/*)
+        [ "$output_file" = /dev/null ] || {
+            printf '%s\n' 'Error contains https://example.invalid/SECRET_SUBSCRIPTION_TOKEN'
+            exit 2
+        }
+        case "${MIHOMO_TEST_PROVIDER_RESULT:-success}" in
+            success) printf 204 ;;
+            http-error) printf 502 ;;
+            timeout) printf 000; exit 28 ;;
+            first-fails)
+                if [ "$url" = 'http://127.0.0.1:9090/providers/proxies/Alpha' ] && [ ! -f "$MIHOMO_TEST_MODE_FILE.failed-once" ]; then
+                    touch "$MIHOMO_TEST_MODE_FILE.failed-once"
+                    printf 502
+                else
+                    printf 204
+                fi
+                ;;
+        esac
         ;;
     GET:*/configs)
+        case "${MIHOMO_TEST_CONFIG_RESULT:-success}" in
+            unavailable) exit 7 ;;
+            malformed) printf '%s\n' '{invalid'; exit 0 ;;
+            missing-mode) printf '%s\n' '{}'; exit 0 ;;
+            unknown-mode) printf '%s\n' '{"mode":"unknown"}'; exit 0 ;;
+            confirmation-fails)
+                [ ! -f "$MIHOMO_TEST_MODE_FILE.patched" ] || exit 7
+                ;;
+        esac
         mode=$(cat "$MIHOMO_TEST_MODE_FILE")
         jq -n --arg mode "$mode" '{mode:$mode}'
         ;;
     PATCH:*/configs)
+        [ "$output_file" = /dev/null ] || exit 2
+        case "${MIHOMO_TEST_PATCH_RESULT:-success}" in
+            http-error) exit 22 ;;
+            timeout) exit 28 ;;
+            no-change) exit 0 ;;
+        esac
         printf '%s' "$payload" | jq -r '.mode' > "$MIHOMO_TEST_MODE_FILE"
+        touch "$MIHOMO_TEST_MODE_FILE.patched"
         ;;
     GET:*/proxies)
         printf '%s\n' '{"proxies":{}}'

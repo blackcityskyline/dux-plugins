@@ -16,14 +16,16 @@ PluginComponent {
     property bool startupHandled: false
     property bool pinging: false
     property string serviceError: ""
-    readonly property string controlError: serviceError || (!available ? "Mihomo is unavailable. Use the VPN switch to start the service." : "")
+    readonly property string controlError: serviceError || (!available ? "Mihomo API is unavailable." : "")
     property bool updatingSubscription: false
-    property var subscriptionStatus: null
-    readonly property string subscriptionError: UiText.subscriptionError(subscriptionStatus)
-    readonly property bool subscriptionBusy: updatingSubscription || (subscriptionStatus && subscriptionStatus.phase === "updating")
-    readonly property string visibleSubscriptionError: subscriptionBusy ? "" : subscriptionError
+    property var httpProviders: []
+    property var subscriptionFailures: []
+    readonly property bool canUpdateSubscriptions: available && httpProviders.length > 0
+    readonly property string subscriptionError: subscriptionFailures.map(result => UiText.displayName(result.name) + ": " + result.error).join("\n")
+    readonly property bool subscriptionBusy: updatingSubscription
+    readonly property string visibleSubscriptionError: canUpdateSubscriptions && !subscriptionBusy ? subscriptionError : ""
     readonly property string indicatorError: visibleSubscriptionError || controlError
-    readonly property string subscriptionTooltip: subscriptionBusy ? "Updating subscription…" : (subscriptionError ? "Retry subscription update" : "Update subscription")
+    readonly property string subscriptionTooltip: subscriptionError ? "Retry subscription updates" : "Update subscriptions"
     property var groupStates: []
     property var displayedGroups: []
     property var expandedGroups: ({})
@@ -114,7 +116,8 @@ PluginComponent {
     }
 
     function refresh() {
-        refreshSubscriptionStatus();
+        if (toggling)
+            return;
         const requestedGroups = configuredGroups.slice();
         const requestKey = JSON.stringify(requestedGroups);
         const generation = ++refreshGeneration;
@@ -129,12 +132,15 @@ PluginComponent {
                 const data = JSON.parse(output);
                 available = true;
                 active = data.active === true;
+                applyHttpProviders(data.httpProviders);
                 applyGroupStates(data.groups);
                 applyStats(data.stats);
+                if (pluginService !== null && pluginId !== "")
+                    applyStartupPreference();
             } catch (error) {
                 markControllerUnavailable();
             }
-        }, 0, 5000);
+        }, 0, 11000);
     }
 
     function markControllerUnavailable() {
@@ -155,65 +161,73 @@ PluginComponent {
             available = result.available === true;
             showInfo("Mihomo VPN", successMessage);
         } else {
+            if (result && result.available === false)
+                markControllerUnavailable();
             serviceError = UiText.englishError(result && result.error, "Could not control Mihomo. Check the local controller.");
             if (typeof ToastService !== "undefined")
                 ToastService.showError("Mihomo VPN", serviceError);
         }
     }
 
-    function applySubscriptionStatus(data) {
-        if (data && typeof data.phase === "string")
-            subscriptionStatus = data;
-        else
-            subscriptionStatus = {
-                phase: "error",
-                error: "Could not read the subscription update status."
-            };
+    function applyHttpProviders(names) {
+        const normalized = Array.isArray(names)
+            ? names.filter((name, index) => typeof name === "string" && name.length > 0 && names.indexOf(name) === index)
+            : [];
+        if (!sameStringArray(httpProviders, normalized))
+            httpProviders = normalized;
+        subscriptionFailures = subscriptionFailures.filter(result => normalized.indexOf(result.name) >= 0);
     }
 
-    function refreshSubscriptionStatus() {
-        Proc.runCommand("mihomoVpn.subscriptionStatus", [helper, "subscription-status"], (output, exitCode) => {
-            try {
-                applySubscriptionStatus(JSON.parse(output));
-            } catch (error) {
-                applySubscriptionStatus(null);
-            }
-        }, 0, 5000);
+    function applySubscriptionResults(results) {
+        subscriptionFailures = results.filter(result => result.ok !== true && httpProviders.indexOf(result.name) >= 0);
     }
 
     function updateSubscription() {
-        if (subscriptionBusy)
+        if (subscriptionBusy || !canUpdateSubscriptions)
             return;
         updatingSubscription = true;
-        Proc.runCommand("mihomoVpn.updateSubscription", [helper, "refresh-subscription"], (output, exitCode) => {
-            updatingSubscription = false;
-            try {
-                applySubscriptionStatus(JSON.parse(output));
-            } catch (error) {
-                applySubscriptionStatus({
-                    phase: "error",
-                    error: "Subscription update failed. Check the updater service."
-                });
+        const providers = httpProviders.slice();
+        const results = [];
+        let next = 0;
+        function updateNext() {
+            if (next === providers.length) {
+                root.applySubscriptionResults(results);
+                root.updatingSubscription = false;
+                const failures = results.filter(result => !result.ok);
+                if (failures.length > 0 && typeof ToastService !== "undefined") {
+                    ToastService.showError("Subscription update failed",
+                        failures.map(result => UiText.displayName(result.name) + ": " + result.error).join("\n"));
+                } else if (failures.length === 0) {
+                    root.showInfo("Mihomo VPN", "Updated subscriptions: " + results.length);
+                }
+                root.refresh();
+                return;
             }
-            if (exitCode !== 0 && !subscriptionError)
-                applySubscriptionStatus({
-                    phase: "error",
-                    error: "Subscription update failed. Please try again."
-                });
-            if (subscriptionError && typeof ToastService !== "undefined")
-                ToastService.showError("Capybara subscription update failed", subscriptionError);
-            else
-                showInfo("Capybara", "Subscription updated successfully");
-            refresh();
-        }, 0, 70000);
+            const name = providers[next++];
+            Proc.runCommand("mihomoVpn.updateProvider." + encodeURIComponent(name), [root.helper, "update-provider", name], (output, exitCode) => {
+                let result = null;
+                try {
+                    result = JSON.parse(output);
+                } catch (error) {}
+                results.push({name: name, ok: exitCode === 0 && result !== null && result.ok === true,
+                    error: UiText.englishError(result && result.error, "Could not update this provider through Mihomo.")});
+                updateNext();
+            }, 0, 70000);
+        }
+        updateNext();
     }
 
     function toggleVpn() {
+        if (!available || toggling)
+            return;
+        startupHandled = true;
         setVpnEnabled(!active);
     }
 
     function applyStartupPreference() {
         if (startupHandled)
+            return;
+        if (pluginData.enableVpnOnStartup === true && !available)
             return;
         startupHandled = true;
         if (pluginData.enableVpnOnStartup === true)
@@ -221,15 +235,16 @@ PluginComponent {
     }
 
     function setVpnEnabled(enabled) {
-        if (toggling)
+        if (toggling || !available)
             return;
         const requestedState = enabled ? "on" : "off";
+        ++refreshGeneration;
         toggling = true;
         Proc.runCommand("mihomoVpn.setVpn", [helper, "set-vpn", requestedState], (output, exitCode) => {
             toggling = false;
             applyControlResult(output, exitCode, requestedState === "on" ? "VPN enabled" : "VPN disabled: direct connection");
             refresh();
-        }, 0, 50000);
+        }, 0, 15000);
     }
 
     function select(group, target) {
@@ -335,15 +350,19 @@ PluginComponent {
         if (delay < 0)
             return Theme.surfaceVariantText;
         if (delay <= 800)
-            return "#20c778";
+            return Theme.success;
         if (delay <= 1500)
-            return "#e5ae32";
-        return "#e85c5c";
+            return Theme.warning;
+        return Theme.error;
     }
 
     function historyColor(delay) {
         // A failed probe is a distinct state, not a slow red connection.
-        return delay < 0 ? "#000000" : delayColor(delay);
+        return delay < 0 ? Theme.surfaceVariantText : delayColor(delay);
+    }
+
+    function visibleHistory(stat) {
+        return (stat.history || []).slice(-4);
     }
 
     Timer {
@@ -470,11 +489,11 @@ PluginComponent {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            enabled: !root.toggling
+                            enabled: root.available && !root.toggling
                             onClicked: root.toggleVpn()
                         }
                         ToolTip.visible: vpnSwitchArea.containsMouse
-                        ToolTip.text: !root.available ? "Start Mihomo and apply the selected mode" : (root.active ? "Disable VPN and route directly" : "Enable VPN")
+                        ToolTip.text: root.active ? "Disable VPN" : "Enable VPN"
                     }
                     Item {
                         width: Theme.spacingS
@@ -482,6 +501,7 @@ PluginComponent {
                     }
                     Rectangle {
                         objectName: "subscriptionUpdateButton"
+                        visible: root.canUpdateSubscriptions
                         width: 32
                         height: 32
                         radius: Theme.cornerRadius
@@ -496,7 +516,7 @@ PluginComponent {
                             id: subscriptionArea
                             anchors.fill: parent
                             hoverEnabled: true
-                            enabled: !root.subscriptionBusy
+                            enabled: root.canUpdateSubscriptions && !root.subscriptionBusy
                             onClicked: root.updateSubscription()
                         }
                         ToolTip.visible: subscriptionArea.containsMouse
@@ -678,15 +698,17 @@ PluginComponent {
 
                                 Row {
                                     id: currentHistory
+                                    objectName: "currentHistory"
                                     anchors.right: parent.right
                                     anchors.rightMargin: Theme.spacingM
                                     anchors.verticalCenter: parent.verticalCenter
                                     height: 17
                                     spacing: 2
                                     Repeater {
-                                        model: (currentRow.stat.history || []).slice(-8)
+                                        model: root.visibleHistory(currentRow.stat)
                                         delegate: Rectangle {
-                                            width: 3
+                                            objectName: "latencyHistoryBar"
+                                            width: 6
                                             height: Math.max(3, Math.min(14, Math.round((modelData.delay < 0 ? 700 : modelData.delay) / 45)))
                                             anchors.bottom: parent.bottom
                                             radius: 1
@@ -765,15 +787,17 @@ PluginComponent {
                                     }
                                     Row {
                                         id: choiceHistory
+                                        objectName: "choiceHistory"
                                         anchors.right: parent.right
                                         anchors.rightMargin: Theme.spacingM
                                         anchors.verticalCenter: parent.verticalCenter
                                         height: 18
                                         spacing: 2
                                         Repeater {
-                                            model: (choiceRow.stat.history || []).slice(-8)
+                                            model: root.visibleHistory(choiceRow.stat)
                                             delegate: Rectangle {
-                                                width: 3
+                                                objectName: "latencyHistoryBar"
+                                                width: 6
                                                 height: Math.max(3, Math.min(15, Math.round((modelData.delay < 0 ? 700 : modelData.delay) / 45)))
                                                 anchors.bottom: parent.bottom
                                                 radius: 1

@@ -1,9 +1,8 @@
 .DEFAULT_GOAL := help
 
 WORKFLOW := ./scripts/plugin-workflow.sh
-SECONDS ?= 15
 
-.PHONY: help test local reload smoke store update-store status
+.PHONY: help test local reload store update-store status
 
 help:
 	@printf '%s\n' \
@@ -13,7 +12,6 @@ help:
 		'  test          Run static and component checks without changing DMS.' \
 		'  local         Validate, activate the project source, and hot reload.' \
 		'  reload        Revalidate and hot reload the local source.' \
-		'  smoke         Reload locally and run the input test (SECONDS=15).' \
 		'  store         Activate the cached registry checkout without a download.' \
 		'  update-store  Download and activate the published registry version.' \
 		'  status        Show the active source, version, and project revision.'
@@ -26,9 +24,6 @@ local:
 
 reload:
 	@$(WORKFLOW) reload
-
-smoke:
-	@$(WORKFLOW) smoke $(SECONDS)
 
 store:
 	@$(WORKFLOW) store

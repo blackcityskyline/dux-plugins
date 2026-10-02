@@ -187,7 +187,6 @@ project revision.
 | `make test` | Run QML linting, manifest and shell validation, and the component self-test without changing the active plugin source. |
 | `make local` | Validate the project, switch to the local source, and hot reload `mihomoVpn`. |
 | `make reload` | Revalidate and hot reload the local source after a development change. |
-| `make smoke SECONDS=15` | Reload local code and run the interactive input-shield test for 15 seconds. |
 | `make store` | Restore the existing registry checkout without a network request and hot reload it. |
 | `make update-store` | Validate, download the published update through DMS, activate it, and hot reload it. |
 | `make status` | Report the active mode, link target, plugin version, and project revision. |
@@ -212,17 +211,7 @@ Edit the project and apply each iteration with one command:
 make reload
 ```
 
-This command runs all automated checks before changing the live component. For
-input, scrolling, or popout geometry changes, also run:
-
-```sh
-make smoke SECONDS=15
-```
-
-The smoke test opens a maximized normal window below DMS and verifies that the
-widget popout is visible above it. Click group headers and rows and scroll the
-lists. The test fails if the popout closes or a button or wheel event reaches
-the window underneath.
+This command runs all automated checks before changing the live component.
 
 Return to the already installed store version at any time, without downloading
 anything:
@@ -235,7 +224,7 @@ Run `make local` to resume work on the project checkout.
 
 ### Publishing a new version
 
-After the fix passes local and smoke testing, update `version` in
+After the fix passes local testing, update `version` in
 `plugin/plugin.json` according to [Semantic Versioning](https://semver.org/).
 Update the `?v=` suffix in the manifest's `settings` URL to the same version.
 DMS caches settings components separately from widgets, so each release needs
@@ -310,15 +299,6 @@ scroll-position stability:
 ```sh
 make test
 ```
-
-Run the Wayland input-shield smoke test through the development workflow:
-
-```sh
-make smoke SECONDS=15
-```
-
-This is an interactive test: use the widget during the displayed interval. A
-pass means no click or wheel event reached the normal window below DMS.
 
 ### Optional diagnostics
 

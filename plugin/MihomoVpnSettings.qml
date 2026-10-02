@@ -148,30 +148,34 @@ PluginSettings {
     StyledText { width: parent.width; text: "Mihomo groups"; font.pixelSize: Theme.fontSizeLarge; font.weight: Font.Bold; color: Theme.surfaceText }
     StyledText { width: parent.width; text: "Click to enable or disable groups. Drag enabled groups to change their order in the widget. Disabled groups appear below."; wrapMode: Text.WordWrap; color: Theme.surfaceVariantText; font.pixelSize: Theme.fontSizeSmall }
 
-    Rectangle { width: parent.width; height: 34; radius: Theme.cornerRadius; color: Theme.surfaceContainerHigh
-        StyledText { anchors.left: parent.left; anchors.leftMargin: Theme.spacingM; anchors.right: groupsRefreshIcon.left; anchors.rightMargin: Theme.spacingS; anchors.verticalCenter: parent.verticalCenter; text: root.loadingGroups ? "Loading groups from the Mihomo API…" : (apiError || "Available groups"); color: apiError ? Theme.error : Theme.surfaceText; elide: Text.ElideRight }
-        DankIcon {
-            id: groupsRefreshIcon
-            anchors.right: parent.right
-            anchors.rightMargin: Theme.spacingM
+    Item {
+        width: parent.width
+        height: 36
+
+        StyledText {
+            anchors.left: parent.left
+            anchors.leftMargin: Theme.spacingM
+            anchors.right: groupsRefreshButton.left
+            anchors.rightMargin: Theme.spacingS
             anchors.verticalCenter: parent.verticalCenter
-            name: "refresh"
-            size: 18
-            color: Theme.primary
-            smoothTransform: root.loadingGroups
-            RotationAnimator on rotation {
-                from: 0
-                to: 360
-                duration: 1000
-                loops: Animation.Infinite
-                running: root.loadingGroups
-                onRunningChanged: {
-                    if (!running)
-                        groupsRefreshIcon.rotation = 0;
-                }
-            }
+            text: root.loadingGroups ? "Loading groups…" : (root.apiError || "Available groups")
+            color: root.apiError ? Theme.error : Theme.surfaceVariantText
+            font.pixelSize: Theme.fontSizeSmall
+            elide: Text.ElideRight
         }
-        MouseArea { anchors.fill: parent; enabled: !root.loadingGroups; onClicked: root.loadGroups() }
+        DankActionButton {
+            id: groupsRefreshButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            buttonSize: 32
+            iconSize: 18
+            iconName: root.loadingGroups ? "hourglass_top" : "refresh"
+            iconColor: Theme.primary
+            backgroundColor: Theme.ccPillInactiveBg
+            enabled: !root.loadingGroups
+            tooltipText: "Refresh groups"
+            onClicked: root.loadGroups()
+        }
     }
     Item {
         id: groupsList
@@ -221,9 +225,8 @@ PluginSettings {
                     width: parent.width
                     height: parent.height
                     scale: groupSlot.dragging ? 1.02 : 1.0
-                    radius: groupSlot.dragging ? Theme.cornerRadius + 6 : Theme.cornerRadius
-                    color: groupSlot.dragging ? Theme.secondaryContainer
-                        : (groupSlot.selected ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh)
+                    radius: Theme.cornerRadiusM
+                    color: groupSlot.selected ? Theme.secondaryContainer : Theme.ccPillInactiveBg
                     border.width: groupSlot.dragging ? 2 : 0
                     border.color: Theme.primary
 
@@ -237,14 +240,23 @@ PluginSettings {
                         ColorAnimation { duration: Theme.shortDuration }
                     }
 
-                    StyledText {
+                    DankIcon {
+                        id: selectionIcon
                         anchors.left: parent.left
                         anchors.leftMargin: Theme.spacingM
+                        anchors.verticalCenter: parent.verticalCenter
+                        name: groupSlot.selected ? "check_circle" : "radio_button_unchecked"
+                        size: 18
+                        color: groupSlot.selected ? Theme.onSecondaryContainer : Theme.surfaceVariantText
+                    }
+                    StyledText {
+                        anchors.left: selectionIcon.right
+                        anchors.leftMargin: Theme.spacingS
                         anchors.right: groupType.left
                         anchors.rightMargin: Theme.spacingS
                         anchors.verticalCenter: parent.verticalCenter
-                        text: (groupSlot.selected ? "✓  " : "○  ") + UiText.displayName(groupSlot.modelData.name)
-                        color: Theme.surfaceText
+                        text: UiText.displayName(groupSlot.modelData.name)
+                        color: groupSlot.selected ? Theme.onSecondaryContainer : Theme.surfaceText
                         elide: Text.ElideRight
                     }
                     StyledText {

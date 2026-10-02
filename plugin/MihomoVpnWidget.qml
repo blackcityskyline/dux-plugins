@@ -304,14 +304,13 @@ PluginComponent {
         };
     }
 
-    function additionalChoices(group) {
+    function groupChoices(group) {
         const state = groupState(group);
-        const choices = Array.isArray(state.choices) ? state.choices : [];
-        return choices.filter(choice => choice !== state.current);
+        return Array.isArray(state.choices) ? state.choices : [];
     }
 
     function groupListHeight(group) {
-        const count = additionalChoices(group).length;
+        const count = groupChoices(group).length;
         return Math.min(count, 10) * choiceRowHeight;
     }
 
@@ -395,13 +394,13 @@ PluginComponent {
             spacing: Theme.spacingXS
             DankIcon {
                 name: root.indicatorError ? "error" : (root.active ? "shield" : "shield_off")
-                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.error)
+                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.surfaceVariantText)
                 size: Theme.iconSize - 6
                 anchors.verticalCenter: parent.verticalCenter
             }
             StyledText {
                 text: root.label
-                color: root.active ? Theme.surfaceText : Theme.error
+                color: root.active ? Theme.surfaceText : Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeSmall
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -413,13 +412,13 @@ PluginComponent {
             spacing: Theme.spacingXS
             DankIcon {
                 name: root.indicatorError ? "error" : (root.active ? "shield" : "shield_off")
-                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.error)
+                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.surfaceVariantText)
                 size: Theme.iconSize - 6
                 anchors.horizontalCenter: parent.horizontalCenter
             }
             StyledText {
                 text: root.active ? "VPN" : "OFF"
-                color: root.active ? Theme.surfaceText : Theme.error
+                color: root.active ? Theme.surfaceText : Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeSmall
                 anchors.horizontalCenter: parent.horizontalCenter
             }
@@ -458,123 +457,54 @@ PluginComponent {
             headerActions: Component {
                 Row {
                     spacing: Theme.spacingXS
-                    Rectangle {
+                    DankToggle {
                         id: vpnSwitch
                         objectName: "vpnModeSwitch"
-                        width: 64
-                        height: 32
-                        radius: height / 2
-                        color: root.active ? Theme.withAlpha(Theme.primary, 0.28) : Theme.surfaceContainerHigh
-                        border.width: 1
-                        border.color: root.controlError ? Theme.error : (root.active ? Theme.primary : Theme.outlineVariant)
-                        opacity: root.toggling ? 0.65 : 1
+                        anchors.verticalCenter: parent.verticalCenter
+                        checked: root.active
+                        toggling: root.toggling
+                        enabled: root.available && !root.toggling
+                        Accessible.name: root.active ? "Disable VPN" : "Enable VPN"
+                        onToggled: root.toggleVpn()
 
-                        Rectangle {
-                            width: 24
-                            height: 24
-                            radius: width / 2
-                            x: root.active ? parent.width - width - 4 : 4
-                            anchors.verticalCenter: parent.verticalCenter
-                            color: root.active ? Theme.primary : Theme.surfaceVariantText
-                            Behavior on x {
-                                NumberAnimation {
-                                    duration: 140
-                                    easing.type: Easing.OutCubic
-                                }
-                            }
-                        }
-                        MouseArea {
-                            id: vpnSwitchArea
-                            objectName: "vpnModeToggle"
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
-                            enabled: root.available && !root.toggling
-                            onClicked: root.toggleVpn()
-                        }
-                        ToolTip.visible: vpnSwitchArea.containsMouse
+                        HoverHandler { id: vpnSwitchHover }
+                        ToolTip.visible: vpnSwitchHover.hovered
                         ToolTip.text: root.active ? "Disable VPN" : "Enable VPN"
                     }
                     Item {
-                        width: Theme.spacingS
+                        width: Theme.spacingXS
                         height: 1
                     }
-                    Rectangle {
+                    DankActionButton {
                         objectName: "subscriptionUpdateButton"
                         visible: root.canUpdateSubscriptions
-                        width: 32
-                        height: 32
-                        radius: Theme.cornerRadius
-                        color: subscriptionArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-                        DankIcon {
-                            anchors.centerIn: parent
-                            name: root.subscriptionBusy ? "hourglass_top" : "cloud_download"
-                            size: 18
-                            color: root.visibleSubscriptionError ? Theme.error : Theme.primary
-                        }
-                        MouseArea {
-                            id: subscriptionArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            enabled: root.canUpdateSubscriptions && !root.subscriptionBusy
-                            onClicked: root.updateSubscription()
-                        }
-                        ToolTip.visible: subscriptionArea.containsMouse
-                        ToolTip.text: root.subscriptionTooltip
+                        buttonSize: 32
+                        iconSize: 18
+                        iconName: root.subscriptionBusy ? "hourglass_top" : "cloud_download"
+                        iconColor: root.subscriptionBusy ? Theme.onSecondaryContainer : root.visibleSubscriptionError ? Theme.error : Theme.primary
+                        backgroundColor: root.subscriptionBusy ? Theme.secondaryContainer : Theme.ccPillInactiveBg
+                        enabled: root.canUpdateSubscriptions
+                        tooltipText: root.subscriptionTooltip
+                        onClicked: root.updateSubscription()
                     }
-                    Rectangle {
-                        width: 32
-                        height: 32
-                        radius: Theme.cornerRadius
-                        color: pingArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-                        DankIcon {
-                            id: pingIcon
-                            anchors.centerIn: parent
-                            name: root.pinging ? "sync" : "speed"
-                            size: 18
-                            color: Theme.primary
-                            smoothTransform: root.pinging
-                            RotationAnimator on rotation {
-                                from: 0
-                                to: 360
-                                duration: 1000
-                                loops: Animation.Infinite
-                                running: root.pinging
-                                onRunningChanged: {
-                                    if (!running)
-                                        pingIcon.rotation = 0;
-                                }
-                            }
-                        }
-                        MouseArea {
-                            id: pingArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            enabled: !root.pinging
-                            onClicked: root.pingAll()
-                        }
-                        ToolTip.visible: pingArea.containsMouse
-                        ToolTip.text: root.pinging ? "Checking all nodes…" : "Check all nodes"
+                    DankActionButton {
+                        objectName: "latencyCheckButton"
+                        buttonSize: 32
+                        iconSize: 18
+                        iconName: root.pinging ? "hourglass_top" : "speed"
+                        iconColor: root.pinging ? Theme.onSecondaryContainer : Theme.primary
+                        backgroundColor: root.pinging ? Theme.secondaryContainer : Theme.ccPillInactiveBg
+                        tooltipText: "Check all nodes"
+                        onClicked: root.pingAll()
                     }
-                    Rectangle {
-                        width: 32
-                        height: 32
-                        radius: Theme.cornerRadius
-                        color: dashboardArea.containsMouse ? Theme.surfaceContainerHighest : Theme.surfaceContainerHigh
-                        DankIcon {
-                            anchors.centerIn: parent
-                            name: "open_in_new"
-                            size: 17
-                            color: Theme.surfaceText
-                        }
-                        MouseArea {
-                            id: dashboardArea
-                            anchors.fill: parent
-                            hoverEnabled: true
-                            onClicked: Qt.openUrlExternally(root.dashboardUrl)
-                        }
-                        ToolTip.visible: dashboardArea.containsMouse
-                        ToolTip.text: "Open MetaCubeXD"
+                    DankActionButton {
+                        buttonSize: 32
+                        iconSize: 18
+                        iconName: "open_in_new"
+                        iconColor: Theme.primary
+                        backgroundColor: Theme.ccPillInactiveBg
+                        tooltipText: "Open MetaCubeXD"
+                        onClicked: Qt.openUrlExternally(root.dashboardUrl)
                     }
                 }
             }
@@ -621,80 +551,83 @@ PluginComponent {
                             property string groupName: modelData
                             property var state: root.groupState(groupName)
                             property string current: state.current || ""
-                            property var additionalChoices: root.additionalChoices(groupName)
+                            property var groupChoices: root.groupChoices(groupName)
                             property bool expanded: root.expandedGroups[groupName] === true
                             property int listHeight: root.groupListHeight(groupName)
                             property bool selectable: state.type === "Selector"
 
                             width: parent.width
                             height: root.groupBaseHeight + (expanded && listHeight > 0 ? root.listSeparatorHeight + listHeight : 0)
-                            radius: Theme.cornerRadius
-                            color: Theme.surfaceContainerHigh
-                            border.width: 1
-                            border.color: Theme.outlineVariant
+                            radius: Theme.cornerRadiusL
+                            color: Theme.ccPillInactiveBg
                             clip: true
 
-                            Rectangle {
+                            StyledButton {
                                 id: groupHeader
+                                objectName: "groupHeader:" + groupCard.groupName
                                 width: parent.width
-                                height: 38
-                                color: groupHeaderArea.containsMouse && groupCard.additionalChoices.length > 0 ? Theme.surfaceContainerHighest : "transparent"
+                                height: root.groupBaseHeight
+                                radius: Theme.cornerRadiusL
+                                enabled: groupCard.groupChoices.length > 0
+                                Accessible.name: UiText.displayName(groupCard.groupName)
+                                Accessible.description: groupCard.expanded ? "Collapse group" : "Expand group"
+                                onClicked: root.toggleGroup(groupCard.groupName)
 
-                                DankIcon {
-                                    id: groupIcon
-                                    name: "route"
-                                    size: 18
-                                    color: Theme.primary
+                                Rectangle {
+                                    id: groupIconBox
+                                    width: 40
+                                    height: 40
+                                    radius: Theme.cornerRadiusM
+                                    color: root.active ? Theme.primary : Theme.ccIconBoxInactiveBg
                                     anchors.left: parent.left
                                     anchors.leftMargin: Theme.spacingM
                                     anchors.verticalCenter: parent.verticalCenter
+
+                                    DankIcon {
+                                        anchors.centerIn: parent
+                                        name: "route"
+                                        size: Theme.iconSize
+                                        color: root.active ? Theme.onPrimary : Theme.primary
+                                    }
                                 }
                                 StyledText {
                                     text: UiText.displayName(groupCard.groupName)
                                     color: Theme.surfaceText
-                                    anchors.left: groupIcon.right
-                                    anchors.leftMargin: Theme.spacingS
+                                    font.weight: Font.Medium
+                                    anchors.left: groupIconBox.right
+                                    anchors.leftMargin: Theme.spacingM
                                     anchors.right: groupExpandIcon.left
                                     anchors.rightMargin: Theme.spacingS
-                                    anchors.verticalCenter: parent.verticalCenter
+                                    y: Theme.spacingM
                                     elide: Text.ElideRight
                                 }
                                 DankIcon {
                                     id: groupExpandIcon
                                     name: groupCard.expanded ? "expand_less" : "expand_more"
                                     size: 18
-                                    color: Theme.surfaceText
-                                    visible: groupCard.additionalChoices.length > 0
+                                    color: Theme.surfaceVariantText
+                                    visible: groupCard.groupChoices.length > 0
                                     anchors.right: parent.right
                                     anchors.rightMargin: Theme.spacingM
-                                    anchors.verticalCenter: parent.verticalCenter
+                                    y: Theme.spacingM
                                 }
-                                MouseArea {
-                                    id: groupHeaderArea
-                                    anchors.fill: parent
-                                    hoverEnabled: true
-                                    cursorShape: Qt.PointingHandCursor
-                                    enabled: groupCard.additionalChoices.length > 0
-                                    onClicked: root.toggleGroup(groupCard.groupName)
+                                StateLayer {
+                                    control: groupHeader
+                                    disabled: !groupHeader.enabled
+                                    stateColor: Theme.primary
                                 }
-                            }
-
-                            Rectangle {
-                                y: 38
-                                width: parent.width
-                                height: 1
-                                color: Theme.outlineVariant
-                                opacity: 0.55
+                                FocusRing { visible: groupHeader.visualFocus }
                             }
 
                             Rectangle {
                                 id: currentRow
                                 property var stat: root.statFor(groupCard.current)
                                 property int latest: root.latestDelay(stat)
-                                y: 39
-                                width: parent.width
-                                height: 29
-                                color: Theme.withAlpha(Theme.primary, 0.08)
+                                x: Theme.spacingM + 40 + Theme.spacingM
+                                y: 34
+                                width: parent.width - x
+                                height: 24
+                                color: "transparent"
 
                                 Row {
                                     id: currentHistory
@@ -727,12 +660,13 @@ PluginComponent {
                                 }
                                 StyledText {
                                     anchors.left: parent.left
-                                    anchors.leftMargin: Theme.spacingM
+                                    anchors.leftMargin: 0
                                     anchors.right: currentDelay.left
                                     anchors.rightMargin: 7
                                     anchors.verticalCenter: parent.verticalCenter
                                     text: groupCard.current ? root.choiceLabel(groupCard.current) : "—"
-                                    color: Theme.primary
+                                    color: Theme.surfaceVariantText
+                                    font.pixelSize: Theme.fontSizeSmall
                                     elide: Text.ElideRight
                                 }
                             }
@@ -740,31 +674,39 @@ PluginComponent {
                             Rectangle {
                                 visible: groupCard.expanded && groupCard.listHeight > 0
                                 y: root.groupBaseHeight
-                                width: parent.width
+                                x: Theme.spacingM
+                                width: parent.width - Theme.spacingM * 2
                                 height: root.listSeparatorHeight
                                 color: Theme.outlineVariant
-                                opacity: 0.55
+                                opacity: 0.35
                             }
 
                             DankListView {
                                 id: choicesList
-                                x: 1
+                                x: Theme.spacingS
                                 y: root.groupBaseHeight + root.listSeparatorHeight
-                                width: parent.width - 2
+                                width: parent.width - Theme.spacingS * 2
                                 height: visible ? groupCard.listHeight : 0
-                                visible: groupCard.expanded && groupCard.additionalChoices.length > 0
-                                model: groupCard.additionalChoices
+                                visible: groupCard.expanded && groupCard.groupChoices.length > 0
+                                model: groupCard.groupChoices
                                 interactive: contentHeight > height
                                 clip: true
 
-                                delegate: Rectangle {
+                                delegate: StyledButton {
                                     id: choiceRow
+                                    objectName: "choice:" + groupCard.groupName + ":" + choiceName
                                     property string choiceName: modelData || ""
+                                    readonly property bool selected: choiceName === groupCard.current
                                     property var stat: root.statFor(choiceName)
                                     property int latest: root.latestDelay(stat)
                                     width: choicesList.width
                                     height: root.choiceRowHeight
-                                    color: choiceArea.containsMouse && groupCard.selectable ? Theme.surfaceContainerHighest : "transparent"
+                                    radius: Theme.cornerRadiusS
+                                    color: selected ? Theme.secondaryContainer : "transparent"
+                                    enabled: groupCard.selectable
+                                    Accessible.selected: selected
+                                    Accessible.name: root.choiceLabel(choiceName)
+                                    onClicked: root.select(groupCard.groupName, choiceName)
 
                                     StyledText {
                                         anchors.left: parent.left
@@ -773,7 +715,7 @@ PluginComponent {
                                         anchors.rightMargin: 6
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: root.choiceLabel(choiceRow.choiceName)
-                                        color: Theme.surfaceText
+                                        color: choiceRow.selected ? Theme.onSecondaryContainer : Theme.surfaceText
                                         elide: Text.ElideRight
                                     }
                                     StyledText {
@@ -805,22 +747,12 @@ PluginComponent {
                                             }
                                         }
                                     }
-                                    Rectangle {
-                                        visible: index < choicesList.count - 1
-                                        anchors.bottom: parent.bottom
-                                        width: parent.width
-                                        height: 1
-                                        color: Theme.outlineVariant
-                                        opacity: 0.45
+                                    StateLayer {
+                                        control: choiceRow
+                                        disabled: !choiceRow.enabled
+                                        stateColor: Theme.secondary
                                     }
-                                    MouseArea {
-                                        id: choiceArea
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        enabled: groupCard.selectable
-                                        onClicked: root.select(groupCard.groupName, choiceRow.choiceName)
-                                    }
+                                    FocusRing { visible: choiceRow.visualFocus }
                                 }
                             }
                         }

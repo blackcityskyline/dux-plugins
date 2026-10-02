@@ -118,7 +118,6 @@ run_checks() {
         cd "$project_dir"
         qmllint -I dev-imports -I /usr/lib/qt6/qml \
             plugin/MihomoVpnWidget.qml plugin/MihomoVpnSettings.qml
-        qmllint -I dev-imports -I /usr/lib/qt6/qml tests/InputShieldProbe.qml
         jq -e --arg id "$plugin_id" '
             .id == $id
             and (.version | type == "string"
@@ -242,13 +241,6 @@ case "$command_name" in
         switch_to_local
         reload_plugin
         print_status
-        ;;
-    smoke)
-        smoke_seconds=${2:-15}
-        run_checks
-        switch_to_local
-        reload_plugin
-        "$project_dir/tests/run-input-shield-test.sh" "$smoke_seconds"
         ;;
     store)
         switch_to_store

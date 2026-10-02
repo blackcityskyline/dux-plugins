@@ -245,6 +245,12 @@ ShellRoot {
                 assertTrue(Qt.colorEqual(bars[3].color, Theme.surfaceVariantText),
                     name + " failed sample does not use the visible theme color");
             }
+            const selected = findObject(popup, "choice:Foreign:f1");
+            const other = findObject(popup, "choice:Foreign:f2");
+            assertTrue(selected !== null && other !== null, "current server is missing from the choices");
+            assertTrue(Qt.colorEqual(selected.color, Theme.secondaryContainer),
+                "current server does not use the secondary accent container");
+            assertTrue(other.color.a === 0, "inactive server has a persistent highlight");
             longList = findLongList(popup);
             assertTrue(longList !== null, "long DankListView was not instantiated");
             assertTrue(longList.interactive === true, "long DankListView is not interactive");
@@ -297,12 +303,12 @@ ShellRoot {
 
             assertTrue(widget.groupListHeight("Foreign") === 10 * widget.choiceRowHeight,
                 "30-choice group was not capped at ten visible rows");
-            assertTrue(widget.groupListHeight("Russia") === 2 * widget.choiceRowHeight,
+            assertTrue(widget.groupListHeight("Russia") === 3 * widget.choiceRowHeight,
                 "small group height is incorrect");
             widget.expandedGroups = ({Foreign: true, Russia: true});
             const expectedHeight = widget.collapsedGroupsHeight
                 + widget.listSeparatorHeight * 2
-                + 12 * widget.choiceRowHeight;
+                + 13 * widget.choiceRowHeight;
             assertTrue(widget.groupsContentHeight === expectedHeight,
                 "expanded content height is off by a divider or row");
             assertTrue(widget.groupsViewportHeight <= widget.maximumGroupsViewportHeight,
@@ -379,9 +385,9 @@ ShellRoot {
             assertTrue(widget.groupsContentHeight === expectedHeight, "idle status changed widget height");
             const vpnSwitch = findObject(popup, "vpnModeSwitch");
             assertTrue(vpnSwitch !== null, "VPN mode switch was not instantiated");
-            assertTrue(vpnSwitch.width > 32 && vpnSwitch.radius === vpnSwitch.height / 2,
-                "VPN mode switch is not an elongated radio control");
-            assertTrue(findObject(popup, "vpnModeToggle").enabled === false,
+            assertTrue(vpnSwitch.width > vpnSwitch.height && vpnSwitch.checked === widget.active,
+                "VPN mode switch does not reflect the controller state");
+            assertTrue(!vpnSwitch.enabled && !vpnSwitch.focusTarget.enabled,
                 "unavailable controller left the API-only VPN switch enabled");
             assertTrue(findObject(popup, "mihomoServiceStatusCard") === null,
                 "controller outage added an unwanted inline card");

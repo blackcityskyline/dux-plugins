@@ -264,9 +264,56 @@ ShellRoot {
         }
     }
 
+    function testBarDisplayModes() {
+        const w = widgetComponent.createObject(null);
+        assertTrue(w !== null, "bar display widget could not be created");
+        assertTrue(w.iconState === "default", "initial state does not use the plain shield");
+        w.available = true;
+        w.active = true;
+        w.statusLoaded = true;
+        assertTrue(w.iconState === "connected", "enabled VPN does not use the check shield");
+        w.active = false;
+        assertTrue(w.iconState === "direct", "direct mode does not use the arrow shield");
+        w.available = false;
+        assertTrue(w.iconState === "disconnected", "unavailable VPN does not use the cross shield");
+        w.available = true;
+        w.active = true;
+        // Assigning pluginData re-evaluates configuredGroups, which clears the
+        // group list; set the display mode first, then the groups.
+        const group = {name: "Foreign", type: "Selector", current: "🇩🇪 Германия",
+            shownCurrent: "🇩🇪 Германия", choices: []};
+        w.pluginData = {barDisplayMode: "full"};
+        w.groupStates = [group];
+        assertTrue(w.barText === "🇩🇪 Germany", "full mode lost the proxy name");
+        w.pluginData = {barDisplayMode: "emoji"};
+        w.groupStates = [group];
+        assertTrue(w.barText === "🇩🇪", "emoji mode did not extract the flag");
+        w.pluginData = {barDisplayMode: "icon"};
+        w.groupStates = [group];
+        assertTrue(w.barText === "" && w.verticalBarText === "", "icon mode still renders a label");
+        w.pluginData = {barDisplayMode: "full"};
+        w.groupStates = [group];
+        assertTrue(w.verticalBarText === "VPN", "vertical full mode lost its short caption");
+        const pill = w.horizontalBarPill.createObject(null);
+        assertTrue(pill !== null && pill.children.length === 2,
+            "bar pill does not render both the shield and the label");
+        assertTrue(pill.children[0].state === "connected", "bar pill ignored the connected state");
+        assertTrue(pill.children[1].text === "🇩🇪 Germany", "bar pill lost the proxy name");
+        w.active = false;
+        assertTrue(w.barText === "" && w.verticalBarText === "", "disabled VPN kept a status label");
+        assertTrue(!pill.children[1].visible, "disabled VPN still renders a text label");
+        w.available = false;
+        assertTrue(pill.children[0].state === "disconnected", "bar pill ignored the offline state");
+        pill.destroy();
+        assertTrue(UiText.emojiOf("plain name") === "", "emoji helper invented an emoji");
+        assertTrue(UiText.emojiOf("🇩🇪 Германия") === "🇩🇪", "emoji helper missed a regional-indicator flag");
+        w.destroy();
+    }
+
     function runTests() {
         try {
             testSettingsAndStartup();
+            testBarDisplayModes();
             widget = widgetComponent.createObject(null);
             assertTrue(widget !== null, "widget could not be created");
             assertTrue(widget.helper.endsWith("/plugin/mihomo-dms"),
@@ -393,6 +440,17 @@ ShellRoot {
                 "controller outage added an unwanted inline card");
             assertTrue(widget.controlError.indexOf("unavailable") >= 0 && widget.indicatorError.length > 0,
                 "controller outage lost its compact error indication");
+            const serviceButton = findObject(popup, "serviceControlButton");
+            const tunButton = findObject(popup, "tunControlButton");
+            assertTrue(serviceButton !== null && tunButton !== null,
+                "service or TUN control button was not instantiated");
+            assertTrue(serviceButton.iconName === "play_arrow",
+                "stopped service does not offer a start action");
+            widget.serviceRunning = true;
+            assertTrue(serviceButton.iconName === "stop_circle",
+                "running service does not offer a stop action");
+            assertTrue(!tunButton.enabled, "offline controller left the TUN toggle enabled");
+            widget.serviceRunning = false;
             Qt.callLater(finishGeometryTest);
         } catch (error) {
             console.error("MIHOMO_SELFTEST_FAIL", error.message);

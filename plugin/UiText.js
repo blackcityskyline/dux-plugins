@@ -28,3 +28,9 @@ function englishError(message, fallback) {
         return fallback;
     return /[А-Яа-яЁё]/.test(message) ? fallback : message;
 }
+
+// Bar labels carry flags and glyphs; return only the first emoji, if any.
+function emojiOf(value) {
+    const match = String(value || "").match(/[\u{1F1E6}-\u{1F1FF}]{2}|[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u);
+    return match ? match[0] : "";
+}

@@ -164,7 +164,7 @@ reload_plugin() {
     rescan_output=$(timeout 5s "$dms_bin" ipc call plugin-scan rescan "$plugin_id" 2>&1) \
         || die "Could not rescan $plugin_id: $rescan_output"
     case "$rescan_output" in
-        "RESCAN_TRIGGERED: $plugin_id") ;;
+        *"RESCAN_TRIGGERED: $plugin_id"*) ;;
         *) die "Could not rescan $plugin_id: $rescan_output" ;;
     esac
     wait_for_plugin 30 || die "Plugin did not load after manifest rescan"

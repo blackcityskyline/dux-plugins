@@ -145,6 +145,18 @@ PluginSettings {
         defaultValue: false
     }
 
+    SelectionSetting {
+        settingKey: "barDisplayMode"
+        label: "Bar display"
+        description: "Full shows the proxy name, emoji shows only a flag or emoji from the name, icon shows only the shield."
+        options: [
+            {label: "Full", value: "full"},
+            {label: "Emoji only", value: "emoji"},
+            {label: "Icon only", value: "icon"}
+        ]
+        defaultValue: "full"
+    }
+
     StyledText { width: parent.width; text: "Mihomo groups"; font.pixelSize: Theme.fontSizeLarge; font.weight: Font.Bold; color: Theme.surfaceText }
     StyledText { width: parent.width; text: "Click to enable or disable groups. Drag enabled groups to change their order in the widget. Disabled groups appear below."; wrapMode: Text.WordWrap; color: Theme.surfaceVariantText; font.pixelSize: Theme.fontSizeSmall }
 

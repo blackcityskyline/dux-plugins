@@ -8,10 +8,17 @@ trap 'rm -rf "$runtime_dir"' EXIT HUP INT TERM
 mkdir -p "$runtime_dir/bin"
 ln -s "$project_dir/tests/mock-mihomo-curl" "$runtime_dir/bin/curl"
 ln -s "$project_dir/tests/mock-mihomo-pkexec" "$runtime_dir/bin/pkexec"
+ln -s "$project_dir/tests/mock-systemctl" "$runtime_dir/bin/systemctl"
+ln -s "$project_dir/tests/mock-miho" "$runtime_dir/bin/miho"
 export PATH="$runtime_dir/bin:$PATH"
 export XDG_STATE_HOME="$runtime_dir/state"
 export MIHOMO_TEST_MODE_FILE="$runtime_dir/mode"
 export MIHOMO_TEST_REQUEST_LOG="$runtime_dir/requests"
+export MIHOMO_TEST_PKEXEC_LOG="$runtime_dir/pkexec-log"
+export MIHOMO_TEST_UNIT_STATE="$runtime_dir/unit-state"
+export MIHOMO_TEST_TUN_STATE="$runtime_dir/tun-state"
+printf '%s\n' active > "$MIHOMO_TEST_UNIT_STATE"
+printf '%s\n' false > "$MIHOMO_TEST_TUN_STATE"
 helper="$project_dir/plugin/mihomo-dms"
 saved_mode="$XDG_STATE_HOME/mihomo-dms/previous-mode"
 
@@ -58,6 +65,11 @@ for failure in unavailable malformed missing-mode unknown-mode; do
         exit 1
     fi
     printf '%s' "$result" | jq -e '.ok == false and .available == false' >/dev/null
+done
+# An unreachable API is a normal stopped state, not a broken bridge.
+result=$(MIHOMO_TEST_CONFIG_RESULT=unavailable "$helper" status)
+printf '%s' "$result" | jq -e '.available == false and .active == false and .serviceRunning == true' >/dev/null
+for failure in malformed missing-mode unknown-mode; do
     if MIHOMO_TEST_CONFIG_RESULT="$failure" "$helper" status >/dev/null 2>&1; then
         printf '%s\n' 'Invalid config returned a successful status' >&2
         exit 1
@@ -99,7 +111,7 @@ request_count=$(wc -l < "$MIHOMO_TEST_REQUEST_LOG")
 if result=$($helper set-vpn invalid); then exit 1; fi
 printf '%s' "$result" | jq -e '.ok == false' >/dev/null
 [ "$(wc -l < "$MIHOMO_TEST_REQUEST_LOG")" = "$request_count" ]
-[ ! -f "$MIHOMO_TEST_MODE_FILE.pkexec-called" ]
+[ ! -f "$MIHOMO_TEST_PKEXEC_LOG" ]
 
 result=$($helper status)
 printf '%s' "$result" | jq -e '.httpProviders == ["Alpha", "Россия / beta?"]' >/dev/null
@@ -136,5 +148,54 @@ if result=$(MIHOMO_TEST_PROVIDERS=unavailable "$helper" update-provider Alpha); 
     exit 1
 fi
 printf '%s' "$result" | jq -e '.ok == false' >/dev/null
+
+# Service and TUN control. State files stand in for systemd and miho.
+status=$($helper status)
+printf '%s' "$status" | jq -e '.available == true and .serviceRunning == true and .tunEnabled == false' >/dev/null
+
+result=$($helper service-stop)
+printf '%s' "$result" | jq -e '.ok == true and .serviceRunning == false and .available == false' >/dev/null
+[ "$(cat "$MIHOMO_TEST_UNIT_STATE")" = inactive ]
+result=$($helper status)
+printf '%s' "$result" | jq -e '.available == false and .serviceRunning == false and .active == false' >/dev/null
+
+result=$($helper service-start)
+printf '%s' "$result" | jq -e '.ok == true and .serviceRunning == true' >/dev/null
+[ "$(cat "$MIHOMO_TEST_UNIT_STATE")" = active ]
+
+result=$($helper tun-on)
+printf '%s' "$result" | jq -e '.ok == true and .tunEnabled == true and .serviceRunning == true' >/dev/null
+[ "$(cat "$MIHOMO_TEST_TUN_STATE")" = true ]
+rg -q 'tun on$' "$MIHOMO_TEST_PKEXEC_LOG"
+result=$($helper status)
+printf '%s' "$result" | jq -e '.available == true and .tunEnabled == true' >/dev/null
+
+result=$($helper tun-off)
+printf '%s' "$result" | jq -e '.ok == true and .tunEnabled == false and .available == true' >/dev/null
+[ "$(cat "$MIHOMO_TEST_TUN_STATE")" = false ]
+[ "$(cat "$MIHOMO_TEST_UNIT_STATE")" = active ]
+rg -q ' stop$' "$MIHOMO_TEST_PKEXEC_LOG"
+
+# A root TUN daemon is outside systemd; the stop button must ask polkit once.
+$helper tun-on >/dev/null
+result=$($helper service-stop)
+printf '%s' "$result" | jq -e '.ok == true and .serviceRunning == false' >/dev/null
+[ "$(cat "$MIHOMO_TEST_TUN_STATE")" = false ]
+$helper service-start >/dev/null
+
+if result=$(MIHOMO_TEST_PKEXEC_RESULT=cancelled "$helper" tun-on); then
+    printf '%s\n' 'A cancelled polkit prompt was reported as success' >&2
+    exit 1
+fi
+printf '%s' "$result" | jq -e '.ok == false and (.error | contains("authentication"))' >/dev/null
+[ "$(cat "$MIHOMO_TEST_TUN_STATE")" = false ]
+
+printf '%s\n' inactive > "$MIHOMO_TEST_UNIT_STATE"
+if result=$(MIHOMO_TEST_START_RESULT=failure "$helper" service-start); then
+    printf '%s\n' 'A failed systemd start was reported as success' >&2
+    exit 1
+fi
+printf '%s' "$result" | jq -e '.ok == false and (.error | length > 0)' >/dev/null
+[ "$(cat "$MIHOMO_TEST_UNIT_STATE")" = inactive ]
 
 printf '%s\n' 'Bridge self-test passed.'

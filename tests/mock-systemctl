@@ -1,0 +1,32 @@
+#!/bin/sh
+# Minimal systemctl stub: only the unit state file decides the answer.
+set -eu
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --user|--quiet) shift ;;
+        *) break ;;
+    esac
+done
+
+command=${1:-}
+state_file=${MIHOMO_TEST_UNIT_STATE:?}
+state=$(cat "$state_file" 2>/dev/null || printf '%s' inactive)
+
+case "$command" in
+    cat)
+        [ "$state" != missing ] || exit 1
+        ;;
+    is-active)
+        [ "$state" = active ] || exit 1
+        ;;
+    start)
+        if [ "${MIHOMO_TEST_START_RESULT:-success}" = failure ]; then
+            exit 1
+        fi
+        printf '%s' active > "$state_file"
+        ;;
+    stop)
+        printf '%s' inactive > "$state_file"
+        ;;
+esac

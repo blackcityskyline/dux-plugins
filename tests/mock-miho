@@ -1,0 +1,29 @@
+#!/bin/sh
+# Minimal miho stub: proxy/TUN transitions are recorded in test state files.
+set -eu
+
+state_file=${MIHOMO_TEST_UNIT_STATE:?}
+tun_file=${MIHOMO_TEST_TUN_STATE:?}
+
+case "${1:-} ${2:-}" in
+    "tun on")
+        # TUN runs as a root daemon outside systemd.
+        printf '%s' inactive > "$state_file"
+        printf '%s' true > "$tun_file"
+        ;;
+    "tun off")
+        printf '%s' active > "$state_file"
+        printf '%s' false > "$tun_file"
+        ;;
+    "start ")
+        printf '%s' active > "$state_file"
+        ;;
+    "stop ")
+        printf '%s' inactive > "$state_file"
+        printf '%s' false > "$tun_file"
+        ;;
+    *)
+        printf 'Unexpected miho call: %s %s\n' "${1:-}" "${2:-}" >&2
+        exit 2
+        ;;
+esac

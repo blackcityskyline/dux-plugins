@@ -44,7 +44,16 @@ if [ -n "${MIHOMO_TEST_REQUEST_LOG:-}" ]; then
     printf '%s %s\n' "$method" "$url" >> "$MIHOMO_TEST_REQUEST_LOG"
 fi
 
+# The API answers while the unit is active or a root TUN daemon runs.
+api_up=false
+[ "$(cat "${MIHOMO_TEST_UNIT_STATE:-/nonexistent}" 2>/dev/null || true)" = active ] && api_up=true
+[ "$(cat "${MIHOMO_TEST_TUN_STATE:-/nonexistent}" 2>/dev/null || true)" = true ] && api_up=true
+[ "$api_up" = true ] || exit 7
+
 case "$method:$url" in
+    GET:*/version)
+        printf '%s\n' '{"version":"test"}'
+        ;;
     GET:*/providers/proxies)
         case "${MIHOMO_TEST_PROVIDERS:-mixed}" in
             mixed) printf '%s\n' '{"providers":{"Alpha":{"vehicleType":"HTTP"},"Россия / beta?":{"vehicleType":"HTTP"},"local":{"vehicleType":"File"},"default":{"vehicleType":"Compatible"}}}' ;;
@@ -84,7 +93,9 @@ case "$method:$url" in
                 ;;
         esac
         mode=$(cat "$MIHOMO_TEST_MODE_FILE")
-        jq -n --arg mode "$mode" '{mode:$mode}'
+        tun=$(cat "${MIHOMO_TEST_TUN_STATE:-/nonexistent}" 2>/dev/null || printf '%s' false)
+        case "$tun" in true) ;; *) tun=false ;; esac
+        jq -n --arg mode "$mode" --argjson tun "$tun" '{mode:$mode, tun:{enable:$tun}}'
         ;;
     PATCH:*/configs)
         [ "$output_file" = /dev/null ] || exit 2

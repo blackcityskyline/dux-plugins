@@ -13,6 +13,11 @@ PluginComponent {
     property bool active: false
     property bool available: false
     property bool toggling: false
+    property bool serviceRunning: false
+    property bool tunEnabled: false
+    property bool serviceBusy: false
+    property bool tunBusy: false
+    property bool statusLoaded: false
     property bool startupHandled: false
     property bool pinging: false
     property string serviceError: ""
@@ -49,12 +54,36 @@ PluginComponent {
     }
     readonly property string label: {
         if (!active)
-            return "OFF";
+            return "";
         if (groupStates.length > 0) {
             const first = groupStates[0];
             return UiText.displayName(first.shownCurrent || first.current || first.name || "ON");
         }
         return "ON";
+    }
+    readonly property string barDisplayMode: {
+        const mode = pluginData.barDisplayMode;
+        return mode === "emoji" || mode === "icon" ? mode : "full";
+    }
+    readonly property string barText: {
+        if (!active || barDisplayMode === "icon")
+            return "";
+        if (barDisplayMode === "emoji")
+            return UiText.emojiOf(label);
+        return label;
+    }
+    // The vertical bar is narrow: the full mode keeps its short VPN caption.
+    readonly property string verticalBarText: {
+        if (barDisplayMode === "emoji")
+            return barText;
+        return barDisplayMode === "full" && active ? "VPN" : "";
+    }
+    readonly property string iconState: {
+        if (!statusLoaded)
+            return "default";
+        if (!available)
+            return "disconnected";
+        return active ? "connected" : "direct";
     }
     readonly property int collapsedGroupsHeight: displayedGroups.length > 0 ? displayedGroups.length * groupBaseHeight + Math.max(0, displayedGroups.length - 1) * Theme.spacingS : 0
     readonly property int expandedHeight: {
@@ -71,6 +100,36 @@ PluginComponent {
         return Math.max(180, Math.floor(screenHeight - barReserve - chromeReserve));
     }
     readonly property int groupsViewportHeight: Math.min(groupsContentHeight, maximumGroupsViewportHeight)
+
+    // Shield indicator with the connection state drawn inside it. Material
+    // Symbols has no shield-with-cross glyph, so the mark is composited.
+    component IndicatorIcon: Item {
+        id: indicator
+
+        property string state: "default"
+        property real size: 18
+        property color color: Theme.surfaceText
+
+        implicitWidth: size
+        implicitHeight: size
+
+        readonly property string mark: state === "disconnected" ? "close" : (state === "direct" ? "arrow_upward" : "")
+
+        DankIcon {
+            name: indicator.state === "connected" ? "verified_user" : "shield"
+            size: indicator.size
+            color: indicator.color
+            anchors.centerIn: parent
+        }
+
+        DankIcon {
+            visible: indicator.mark !== ""
+            name: indicator.mark
+            size: Math.max(6, Math.round(indicator.size * 0.44))
+            color: indicator.color
+            anchors.centerIn: parent
+        }
+    }
 
     onConfiguredGroupsChanged: {
         refreshGeneration++;
@@ -124,27 +183,39 @@ PluginComponent {
         Proc.runCommand("mihomoVpn.status", [helper, "status"].concat(requestedGroups), (output, exitCode) => {
             if (generation !== refreshGeneration || requestKey !== JSON.stringify(configuredGroups))
                 return;
-            if (exitCode !== 0) {
+            let data = null;
+            try {
+                data = JSON.parse(output);
+            } catch (error) {
                 markControllerUnavailable();
                 return;
             }
-            try {
-                const data = JSON.parse(output);
-                available = true;
-                active = data.active === true;
-                applyHttpProviders(data.httpProviders);
-                applyGroupStates(data.groups);
-                applyStats(data.stats);
-                if (pluginService !== null && pluginId !== "")
-                    applyStartupPreference();
-            } catch (error) {
+            if (!data || typeof data.available !== "boolean") {
                 markControllerUnavailable();
+                return;
             }
+            statusLoaded = true;
+            if (typeof data.serviceRunning === "boolean")
+                serviceRunning = data.serviceRunning;
+            if (typeof data.tunEnabled === "boolean")
+                tunEnabled = data.tunEnabled;
+            if (data.available !== true) {
+                markControllerUnavailable();
+                return;
+            }
+            available = true;
+            active = data.active === true;
+            applyHttpProviders(data.httpProviders);
+            applyGroupStates(data.groups);
+            applyStats(data.stats);
+            if (pluginService !== null && pluginId !== "")
+                applyStartupPreference();
         }, 0, 11000);
     }
 
     function markControllerUnavailable() {
         available = false;
+        statusLoaded = true;
         // A stopped or unreachable controller cannot provide VPN routing.
         // Do not leave a stale enabled indicator in the bar.
         active = false;
@@ -157,8 +228,14 @@ PluginComponent {
         } catch (error) {}
         if (exitCode === 0 && result && result.ok === true) {
             serviceError = "";
-            active = result.active === true;
-            available = result.available === true;
+            if ("active" in result)
+                active = result.active === true;
+            if ("available" in result)
+                available = result.available === true;
+            if ("serviceRunning" in result)
+                serviceRunning = result.serviceRunning === true;
+            if ("tunEnabled" in result)
+                tunEnabled = result.tunEnabled === true;
             showInfo("Mihomo VPN", successMessage);
         } else {
             if (result && result.available === false)
@@ -167,6 +244,39 @@ PluginComponent {
             if (typeof ToastService !== "undefined")
                 ToastService.showError("Mihomo VPN", serviceError);
         }
+    }
+
+    function startService() {
+        if (serviceBusy)
+            return;
+        serviceBusy = true;
+        Proc.runCommand("mihomoVpn.startService", [helper, "service-start"], (output, exitCode) => {
+            serviceBusy = false;
+            applyControlResult(output, exitCode, "Mihomo service started");
+            refresh();
+        }, 0, 20000);
+    }
+
+    function stopService() {
+        if (serviceBusy)
+            return;
+        serviceBusy = true;
+        Proc.runCommand("mihomoVpn.stopService", [helper, "service-stop"], (output, exitCode) => {
+            serviceBusy = false;
+            applyControlResult(output, exitCode, "Mihomo service stopped");
+            refresh();
+        }, 0, 60000);
+    }
+
+    function setTunEnabled(enabled) {
+        if (tunBusy)
+            return;
+        tunBusy = true;
+        Proc.runCommand("mihomoVpn.tun", [helper, enabled ? "tun-on" : "tun-off"], (output, exitCode) => {
+            tunBusy = false;
+            applyControlResult(output, exitCode, enabled ? "TUN mode enabled" : "TUN mode disabled");
+            refresh();
+        }, 0, 120000);
     }
 
     function applyHttpProviders(names) {
@@ -392,14 +502,15 @@ PluginComponent {
     horizontalBarPill: Component {
         Row {
             spacing: Theme.spacingXS
-            DankIcon {
-                name: root.indicatorError ? "error" : (root.active ? "shield" : "shield_off")
-                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.surfaceVariantText)
+            IndicatorIcon {
+                state: root.iconState
                 size: Theme.iconSize - 6
+                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.surfaceVariantText)
                 anchors.verticalCenter: parent.verticalCenter
             }
             StyledText {
-                text: root.label
+                text: root.barText
+                visible: text !== ""
                 color: root.active ? Theme.surfaceText : Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeSmall
                 anchors.verticalCenter: parent.verticalCenter
@@ -410,14 +521,15 @@ PluginComponent {
     verticalBarPill: Component {
         Column {
             spacing: Theme.spacingXS
-            DankIcon {
-                name: root.indicatorError ? "error" : (root.active ? "shield" : "shield_off")
-                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.surfaceVariantText)
+            IndicatorIcon {
+                state: root.iconState
                 size: Theme.iconSize - 6
+                color: root.indicatorError ? Theme.error : (root.active ? Theme.primary : Theme.surfaceVariantText)
                 anchors.horizontalCenter: parent.horizontalCenter
             }
             StyledText {
-                text: root.active ? "VPN" : "OFF"
+                text: root.verticalBarText
+                visible: text !== ""
                 color: root.active ? Theme.surfaceText : Theme.surfaceVariantText
                 font.pixelSize: Theme.fontSizeSmall
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -457,6 +569,28 @@ PluginComponent {
             headerActions: Component {
                 Row {
                     spacing: Theme.spacingXS
+                    DankActionButton {
+                        objectName: "serviceControlButton"
+                        buttonSize: 32
+                        iconSize: 18
+                        iconName: root.serviceBusy ? "hourglass_top" : (root.serviceRunning ? "stop_circle" : "play_arrow")
+                        iconColor: root.serviceBusy ? Theme.onSecondaryContainer : (root.serviceRunning ? Theme.error : Theme.primary)
+                        backgroundColor: root.serviceBusy ? Theme.secondaryContainer : Theme.ccPillInactiveBg
+                        enabled: !root.serviceBusy
+                        tooltipText: root.serviceRunning ? "Stop Mihomo service" : "Start Mihomo service"
+                        onClicked: root.serviceRunning ? root.stopService() : root.startService()
+                    }
+                    DankActionButton {
+                        objectName: "tunControlButton"
+                        buttonSize: 32
+                        iconSize: 18
+                        iconName: root.tunBusy ? "hourglass_top" : "route"
+                        iconColor: root.tunBusy ? Theme.onSecondaryContainer : (root.tunEnabled ? Theme.onPrimary : Theme.primary)
+                        backgroundColor: root.tunBusy ? Theme.secondaryContainer : (root.tunEnabled ? Theme.primary : Theme.ccPillInactiveBg)
+                        enabled: root.available && !root.tunBusy
+                        tooltipText: root.tunEnabled ? "Disable TUN mode" : "Enable TUN mode"
+                        onClicked: root.setTunEnabled(!root.tunEnabled)
+                    }
                     DankToggle {
                         id: vpnSwitch
                         objectName: "vpnModeSwitch"

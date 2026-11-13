@@ -1,5 +1,6 @@
 #!/bin/sh
-# Guard: an API-only widget must never request elevated privileges.
-printf '%s\n' 'Unexpected pkexec invocation' >&2
-touch "$MIHOMO_TEST_MODE_FILE.pkexec-called"
-exit 1
+# Records elevated calls and runs them with the uid pkexec would report.
+set -eu
+[ -z "${MIHOMO_TEST_PKEXEC_LOG:-}" ] || printf '%s\n' "$*" >> "$MIHOMO_TEST_PKEXEC_LOG"
+[ "${MIHOMO_TEST_PKEXEC_RESULT:-success}" = success ] || exit 126
+exec env PKEXEC_UID="$(id -u)" "$@"

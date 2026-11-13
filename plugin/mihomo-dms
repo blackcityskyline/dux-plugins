@@ -21,6 +21,210 @@ read_mode() {
     .mode | ascii_downcase | select(. == "direct" or . == "rule" or . == "global")'
 }
 
+read_tun() {
+  config=$(api_get /configs) || return 1
+  printf '%s' "$config" | jq -e '.tun.enable == true' >/dev/null
+}
+
+service_unit=mihomo.service
+
+service_exists() {
+  systemctl --user cat "$service_unit" >/dev/null 2>&1 ||
+    systemctl cat "$service_unit" >/dev/null 2>&1
+}
+
+service_scope() {
+  if systemctl --user cat "$service_unit" >/dev/null 2>&1; then
+    printf '%s' user
+  elif systemctl cat "$service_unit" >/dev/null 2>&1; then
+    printf '%s' system
+  else
+    printf '%s' user
+  fi
+}
+
+service_control() {
+  action=$1
+  case "$(service_scope)" in
+    system) systemctl "$action" "$service_unit" ;;
+    *) systemctl --user "$action" "$service_unit" ;;
+  esac
+}
+
+service_running() {
+  systemctl --user is-active --quiet "$service_unit" 2>/dev/null && return 0
+  systemctl is-active --quiet "$service_unit" 2>/dev/null && return 0
+  curl --noproxy '*' -fsS --max-time 1 "$api/version" >/dev/null 2>&1
+}
+
+wait_api() {
+  attempt=0
+  while [ "$attempt" -lt 100 ]; do
+    if curl --noproxy '*' -fsS --max-time 1 "$api/version" >/dev/null 2>&1; then
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+miho_bin() {
+  if [ -n "${MIHO_BIN:-}" ] && [ -x "${MIHO_BIN}" ]; then
+    printf '%s' "$MIHO_BIN"
+    return 0
+  fi
+  if command -v miho >/dev/null 2>&1; then
+    command -v miho
+    return 0
+  fi
+  for candidate in "$HOME/bin/others/miho" "$HOME/.local/bin/miho" "$HOME/bin/miho"; do
+    if [ -x "$candidate" ]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+api_down() {
+  curl --noproxy '*' -fsS --max-time 1 "$api/version" >/dev/null 2>&1 && return 1
+  return 0
+}
+
+wait_api_down() {
+  attempt=0
+  while [ "$attempt" -lt 100 ]; do
+    api_down && return 0
+    attempt=$((attempt + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+# DMS registers a polkit agent, so pkexec can ask for the password. The root
+# shell only runs the fixed miho action and hands the user's files back; a
+# user-writable helper cannot change ownership on its own.
+pkexec_miho() {
+  pkexec /bin/sh -c '
+uid=${PKEXEC_UID:?}
+entry=$(getent passwd "$uid") || exit 1
+home=$(printf "%s" "$entry" | cut -d: -f6)
+gid=$(printf "%s" "$entry" | cut -d: -f4)
+[ -n "$home" ] || exit 1
+HOME="$home" "$@" >/dev/null 2>&1
+status=$?
+for dir in "$home/.config/mihomo" "$home/.config/miho"; do
+  [ -d "$dir" ] || continue
+  [ "$(stat -c %u "$dir" 2>/dev/null)" = "$uid" ] || chown -R "$uid:$gid" "$dir"
+done
+exit "$status"' sh "$@"
+}
+
+service_start() {
+  if service_exists; then
+    if ! service_control start; then
+      printf '%s\n' '{"ok":false,"error":"systemctl could not start mihomo.service."}'
+      return 1
+    fi
+  elif miho=$(miho_bin); then
+    if ! "$miho" start >/dev/null 2>&1; then
+      printf '%s\n' '{"ok":false,"error":"miho could not start Mihomo. Check ~/.config/miho/mihomo.log."}'
+      return 1
+    fi
+  else
+    printf '%s\n' '{"ok":false,"error":"No mihomo.service unit and no miho helper were found."}'
+    return 1
+  fi
+  if ! wait_api; then
+    printf '%s\n' '{"ok":false,"error":"Mihomo started but its API did not answer. Check journalctl --user -u mihomo.service."}'
+    return 1
+  fi
+  printf '%s\n' '{"ok":true,"available":true,"serviceRunning":true}'
+}
+
+service_stop() {
+  if systemctl --user is-active --quiet "$service_unit" 2>/dev/null; then
+    systemctl --user stop "$service_unit" || {
+      printf '%s\n' '{"ok":false,"error":"systemctl could not stop mihomo.service."}'
+      return 1
+    }
+  elif systemctl is-active --quiet "$service_unit" 2>/dev/null; then
+    systemctl stop "$service_unit" || {
+      printf '%s\n' '{"ok":false,"error":"systemctl could not stop mihomo.service."}'
+      return 1
+    }
+  elif miho=$(miho_bin); then
+    # TUN mode and miho's own restarts leave mihomo outside systemd.
+    if read_tun 2>/dev/null; then
+      pkexec_miho "$miho" stop || {
+        printf '%s\n' '{"ok":false,"error":"Stopping the TUN daemon needs administrator authentication."}'
+        return 1
+      }
+    elif ! "$miho" stop >/dev/null 2>&1; then
+      printf '%s\n' '{"ok":false,"error":"miho could not stop Mihomo."}'
+      return 1
+    fi
+  fi
+  if ! wait_api_down; then
+    printf '%s\n' '{"ok":false,"error":"Mihomo is still running after a stop request."}'
+    return 1
+  fi
+  printf '%s\n' '{"ok":true,"available":false,"active":false,"serviceRunning":false}'
+}
+
+tun_on() {
+  miho=$(miho_bin) || {
+    printf '%s\n' '{"ok":false,"error":"The miho helper is required for TUN mode and was not found."}'
+    return 1
+  }
+  if ! pkexec_miho "$miho" tun on; then
+    printf '%s\n' '{"ok":false,"error":"TUN mode needs administrator authentication (cancelled or failed)."}'
+    return 1
+  fi
+  if ! wait_api || ! read_tun; then
+    printf '%s\n' '{"ok":false,"error":"Mihomo restarted but TUN did not activate. Check ~/.config/miho/mihomo.log."}'
+    return 1
+  fi
+  printf '%s\n' '{"ok":true,"available":true,"serviceRunning":true,"tunEnabled":true}'
+}
+
+tun_off() {
+  miho=$(miho_bin) || {
+    printf '%s\n' '{"ok":false,"error":"The miho helper is required to stop a TUN daemon and was not found."}'
+    return 1
+  }
+  # A TUN daemon runs as root; stopping it needs the same polkit prompt.
+  if read_tun 2>/dev/null; then
+    pkexec_miho "$miho" stop || {
+      printf '%s\n' '{"ok":false,"error":"Disabling TUN mode needs administrator authentication."}'
+      return 1
+    }
+  else
+    "$miho" stop >/dev/null 2>&1 || true
+  fi
+  # miho leaves a user-mode daemon behind in TUN off, so let the systemd unit
+  # own proxy mode again when one exists.
+  if service_exists; then
+    service_control start || {
+      printf '%s\n' '{"ok":false,"error":"systemctl could not start mihomo.service after TUN was disabled."}'
+      return 1
+    }
+  elif ! "$miho" start >/dev/null 2>&1; then
+    printf '%s\n' '{"ok":false,"error":"miho could not restart Mihomo in proxy mode."}'
+    return 1
+  fi
+  if ! wait_api; then
+    printf '%s\n' '{"ok":false,"error":"Mihomo did not restart in proxy mode."}'
+    return 1
+  fi
+  if read_tun; then
+    printf '%s\n' '{"ok":false,"error":"TUN is still enabled after the stop request."}'
+    return 1
+  fi
+  printf '%s\n' '{"ok":true,"available":true,"serviceRunning":true,"tunEnabled":false}'
+}
+
 http_providers() {
   provider_data=$(api_get /providers/proxies) || return 1
   printf '%s' "$provider_data" | jq -ce '
@@ -62,12 +266,37 @@ groups_json() {
 
 status() {
   selected_groups=$(groups_json "$@")
-  mode=$(read_mode) || return 1
+  running=false
+  if service_running; then
+    running=true
+  fi
+
+  if ! config=$(api_get /configs); then
+    jq -n --argjson running "$running" \
+      '{available:false, active:false, mode:"direct", serviceRunning:$running,
+        tunEnabled:false, httpProviders:[], groups:[], stats:[]}'
+    return 0
+  fi
+
+  if ! mode=$(printf '%s' "$config" | jq -er '
+      .mode | ascii_downcase | select(. == "direct" or . == "rule" or . == "global")' 2>/dev/null); then
+    jq -n --argjson running "$running" \
+      '{available:false, active:false, mode:"direct", serviceRunning:$running,
+        tunEnabled:false, error:"Mihomo returned an invalid controller state.",
+        httpProviders:[], groups:[], stats:[]}'
+    return 1
+  fi
+
+  tun=false
+  if printf '%s' "$config" | jq -e '.tun.enable == true' >/dev/null 2>&1; then
+    tun=true
+  fi
+
   proxies=$(api_get /proxies)
   # Provider discovery is optional; it must not break node controls.
   providers=$(http_providers 2>/dev/null || printf '%s' '[]')
   history=$(cat "$history_file" 2>/dev/null || printf '%s' '{}')
-  printf '%s' "$proxies" | jq --arg mode "$mode" --argjson providers "$providers" --argjson history "$history" --argjson groups "$selected_groups" '
+  printf '%s' "$proxies" | jq --arg mode "$mode" --argjson tun "$tun" --argjson providers "$providers" --argjson history "$history" --argjson groups "$selected_groups" '
     .proxies as $p |
     ($groups | map(select($p[.].type == "Selector"))) as $selectorGroups |
     def choices($group): $p[$group].all // [];
@@ -80,8 +309,11 @@ status() {
       (resolved($name)) as $display |
       {name: $name, displayName: $display, history: ($history[$display] // $history[$name] // [])};
     {
+      available: true,
       active: ($mode != "direct"),
       mode: $mode,
+      serviceRunning: true,
+      tunEnabled: $tun,
       httpProviders: $providers,
       groups: [
         $selectorGroups[] as $group |
@@ -276,6 +508,10 @@ case $action in
   update-provider) update_provider "${1:-}" ;;
   status) status "$@" ;;
   set-vpn) set_vpn "${1:-}" ;;
+  service-start) service_start ;;
+  service-stop) service_stop ;;
+  tun-on) tun_on ;;
+  tun-off) tun_off ;;
   select) select_proxy "${1:-}" "${2:-}" ;;
   delay) delay "${1:-}" ;;
   ping-all) ping_all "$@" ;;
